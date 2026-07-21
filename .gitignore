@@ -1,0 +1,66 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+.kotlin
+
+### IntelliJ IDEA ###
+.idea/modules.xml
+.idea/jarRepositories.xml
+.idea/compiler.xml
+.idea/libraries/
+*.iws
+*.iml
+*.ipr
+
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Mac OS ###
+.DS_Store
+
+
+.idea/
+.gradle/
+build/
+out/
+bin/
+node_modules/
+*.dll
+*.jar
+
+
+# === Logs (Netty 서버 실행 로그 파일) ===
+*.log
+logs/
+
+# === SSL / TLS (보안 인증서 파일 - 절대 올리면 안 됨!) ===
+*.crt
+*.key
+*.pem
+*.p12
+*.jks
+
+# === Native Transport 빌드 부산물 (필요 시) ===
+*.so
+*.dll
+*.dylib
