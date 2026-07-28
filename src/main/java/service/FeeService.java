@@ -33,9 +33,7 @@ public class FeeService {
                 getOverseasFeeUSD(userId, symbol);
 
 
-        double rate =
-                exchangeRateDAODAO
-                        .getRate("USD");
+        double rate = Store.ExchangeRateCache.getRate("USD");
 
 
         return usdFee * rate;

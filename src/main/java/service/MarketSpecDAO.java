@@ -122,7 +122,72 @@ public class MarketSpecDAO {
 
     }
 
+    // =========================
+// 옵션(KOSPI200 옵션) 데이터 조회
+// =========================
+    public String[] loadOptionData() {
 
+        String sql = """
+        SELECT trade_start, trade_end, is_active, expiry_date
+        FROM market_specs
+        WHERE market_type='OPTIONS' AND underlying_symbol='KOSPI200'
+        LIMIT 1
+    """;
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ResultSet rs = ps.executeQuery();
+
+            if (rs.next()) {
+                return new String[]{
+                        nvl(rs.getString("trade_start")),
+                        nvl(rs.getString("trade_end")),
+                        rs.getBoolean("is_active") ? "false" : "true",
+                        nvl(rs.getString("expiry_date"))
+                };
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return new String[]{"", "", "false", ""};
+    }
+
+    // =========================
+// 옵션(KOSPI200 옵션) 저장 - 42개 전체 일괄 갱신
+// =========================
+    public void saveOptionData(String start, String end, boolean isHoliday, String expiry) {
+
+        String sql = """
+        UPDATE market_specs
+        SET trade_start=?, trade_end=?, is_active=?, expiry_date=?
+        WHERE market_type='OPTIONS' AND underlying_symbol='KOSPI200'
+    """;
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setString(1, start);
+            ps.setString(2, end);
+            ps.setBoolean(3, !isHoliday);
+
+            if (expiry.isEmpty()) {
+                ps.setNull(4, Types.DATE);
+            } else {
+                ps.setString(4, expiry);
+            }
+
+            ps.executeUpdate();
+
+            MarketSpecCache.refresh();
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+            JOptionPane.showMessageDialog(null, "옵션 저장 실패");
+        }
+    }
 
 //항셍데이타
 
@@ -306,6 +371,38 @@ WHERE symbol=?
         );
     }
 
+
+    public model.OptionMarketData loadOptionDataModel() {
+
+        String sql = """
+        SELECT trade_start, trade_end, is_active, expiry_date
+        FROM market_specs
+        WHERE market_type='OPTIONS' AND underlying_symbol='KOSPI200'
+        LIMIT 1
+    """;
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ResultSet rs = ps.executeQuery();
+
+            if (rs.next()) {
+                return new model.OptionMarketData(
+                        nvl(rs.getString("trade_start")),
+                        nvl(rs.getString("trade_end")),
+                        !rs.getBoolean("is_active"),   // 🔥 is_active=false면 휴일이므로 반전
+                        nvl(rs.getString("expiry_date"))
+                );
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return new model.OptionMarketData("", "", false, "");
+    }
+
+
     public model.HsiMarketData loadHsiDataModel() {
         String[] data = loadHsiData();
         return new model.HsiMarketData(
@@ -369,6 +466,33 @@ WHERE symbol=?
 
 
 
+
+// =========================================
+    // 국내선물. 옵션 엔트리 증거금 일괄 설정
+    // =========================================
+public void updateDomesticEntryMargin(long margin){
+    String sql = "UPDATE market_specs SET entry_margin=? WHERE market_type='DOMESTIC_FUTURES'";
+    try(Connection conn = DBUtil.getConnection();
+        PreparedStatement ps = conn.prepareStatement(sql)){
+        ps.setLong(1, margin);
+        ps.executeUpdate();
+        MarketSpecCache.refresh();
+    }catch(SQLException e){
+        e.printStackTrace();
+    }
+}
+
+    public void updateOptionEntryMargin(long margin){
+        String sql = "UPDATE market_specs SET entry_margin=? WHERE market_type='OPTIONS'";
+        try(Connection conn = DBUtil.getConnection();
+            PreparedStatement ps = conn.prepareStatement(sql)){
+            ps.setLong(1, margin);
+            ps.executeUpdate();
+            MarketSpecCache.refresh();
+        }catch(SQLException e){
+            e.printStackTrace();
+        }
+    }
 
 
     // =========================================
@@ -447,6 +571,76 @@ WHERE symbol=?
 
 
     // =========================================
+// 국내선물 로스컷 (항상 직접 적용, 일괄/개별 구분 없음)
+// =========================================
+    public void updateDomesticMaintMargin(long margin){
+        String sql =
+                "UPDATE market_specs " +
+                        "SET maint_margin=? " +
+                        "WHERE market_type='DOMESTIC_FUTURES'";
+        try(Connection conn = DBUtil.getConnection();
+            PreparedStatement ps = conn.prepareStatement(sql)){
+            ps.setLong(1, margin);
+            ps.executeUpdate();
+            MarketSpecCache.refresh();
+        }catch(SQLException e){
+            e.printStackTrace();
+        }
+    }
+
+    // =========================================
+// 옵션 로스컷 (항상 직접 적용, 일괄/개별 구분 없음)
+// =========================================
+    public void updateOptionMaintMargin(long margin){
+        String sql =
+                "UPDATE market_specs " +
+                        "SET maint_margin=? " +
+                        "WHERE market_type='OPTIONS'";
+        try(Connection conn = DBUtil.getConnection();
+            PreparedStatement ps = conn.prepareStatement(sql)){
+            ps.setLong(1, margin);
+            ps.executeUpdate();
+            MarketSpecCache.refresh();
+        }catch(SQLException e){
+            e.printStackTrace();
+        }
+    }
+
+    // =========================================
+    // 해외선물 일괄 로스컷
+    // =========================================
+    public void updateOverseasMaintMargin(long margin){
+
+
+        String sql =
+                "UPDATE market_specs " +
+                        "SET maint_margin=? " +
+                        "WHERE market_type='OVERSEAS_FUTURES'";
+
+
+        try(Connection conn = DBUtil.getConnection();
+            PreparedStatement ps = conn.prepareStatement(sql)){
+
+
+            ps.setLong(1, margin);
+
+            ps.executeUpdate();
+
+            MarketSpecCache.refresh();
+
+
+        }catch(SQLException e){
+
+            e.printStackTrace();
+
+        }
+
+    }
+
+
+
+
+    // =========================================
     // 해외선물 개별 로스컷(유지증거금)
     // =========================================
     public void updateMaintMargin(
@@ -481,38 +675,6 @@ WHERE symbol=?
 
     }
 
-
-
-    // =========================================
-    // 해외선물 일괄 로스컷
-    // =========================================
-    public void updateOverseasMaintMargin(long margin){
-
-
-        String sql =
-                "UPDATE market_specs " +
-                        "SET maint_margin=? " +
-                        "WHERE market_type='OVERSEAS_FUTURES'";
-
-
-        try(Connection conn = DBUtil.getConnection();
-            PreparedStatement ps = conn.prepareStatement(sql)){
-
-
-            ps.setLong(1, margin);
-
-            ps.executeUpdate();
-
-            MarketSpecCache.refresh();
-
-
-        }catch(SQLException e){
-
-            e.printStackTrace();
-
-        }
-
-    }
 
 
 
@@ -850,6 +1012,37 @@ WHERE symbol=?
 
     }
 
+/// //////////////심볼 들고오기 ///////
+    public List<String> getDomesticSymbols(){
+        List<String> list = new ArrayList<>();
+        String sql = "SELECT symbol FROM market_specs WHERE market_type='DOMESTIC_FUTURES'";
+        try(Connection conn = DBUtil.getConnection();
+            PreparedStatement ps = conn.prepareStatement(sql)){
+            ResultSet rs = ps.executeQuery();
+            while(rs.next()){
+                list.add(rs.getString("symbol"));
+            }
+        }catch(Exception e){
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+    public List<String> getOptionSymbols(){
+        List<String> list = new ArrayList<>();
+        String sql = "SELECT symbol FROM market_specs WHERE market_type='OPTIONS'";
+        try(Connection conn = DBUtil.getConnection();
+            PreparedStatement ps = conn.prepareStatement(sql)){
+            ResultSet rs = ps.executeQuery();
+            while(rs.next()){
+                list.add(rs.getString("symbol"));
+            }
+        }catch(Exception e){
+            e.printStackTrace();
+        }
+        return list;
+    }
+
     public List<String> getOverseasSymbols(){
 
         List<String> list =
@@ -886,6 +1079,89 @@ WHERE symbol=?
 
         return list;
     }
+/// //////////////////////////////
+
+    public void updateDomesticOvernightEnabled(boolean enabled) {
+
+        String sql =
+                "UPDATE market_specs " +
+                        "SET overnight_enabled=? " +
+                        "WHERE market_type='DOMESTIC_FUTURES'";
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setBoolean(1, enabled);
+            ps.executeUpdate();
+
+            MarketSpecCache.refresh();
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void updateOptionOvernightEnabled(boolean enabled) {
+
+        String sql =
+                "UPDATE market_specs " +
+                        "SET overnight_enabled=? " +
+                        "WHERE market_type='OPTIONS'";
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setBoolean(1, enabled);
+            ps.executeUpdate();
+
+            MarketSpecCache.refresh();
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+
+    public void updateDomesticOvernightMargin(long margin) {
+
+        String sql =
+                "UPDATE market_specs " +
+                        "SET overnight_margin=? " +
+                        "WHERE market_type='DOMESTIC_FUTURES'";
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setLong(1, margin);
+            ps.executeUpdate();
+
+            MarketSpecCache.refresh();
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void updateOptionOvernightMargin(long margin) {
+
+        String sql =
+                "UPDATE market_specs " +
+                        "SET overnight_margin=? " +
+                        "WHERE market_type='OPTIONS'";
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setLong(1, margin);
+            ps.executeUpdate();
+
+            MarketSpecCache.refresh();
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
 
 //오버가능여부 개별성정 체크값 가져오기
     public Map<String, Boolean> getOvernightEnabledMap(){
@@ -1092,76 +1368,6 @@ WHERE symbol=?
 
 
 
-
-//옵션
-    public void generateKospiOptionChain() {
-
-        double centerStrike = 27000;   // 임의로 고정 (또는 원하는 값으로)
-        int stepsEachSide = 10;        // 위아래 10개씩, 총 21개 행사가
-
-        String sql = """
-        INSERT INTO market_specs
-        (symbol, display_name, price_start, price_end, initial_price, tick_size, tick_value,
-         contract_multiplier, currency, fee_per_contract, maint_margin, trade_start, trade_end,
-         is_active, expiry_date, contract_code, sort_order, entry_margin, overnight_margin,
-         overnight_enabled, market_type, fee_type, option_type, strike_price, underlying_symbol)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON DUPLICATE KEY UPDATE symbol=symbol
-    """;
-
-        try (Connection conn = DBUtil.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-
-            int sortOrder = 0;
-
-            for (int step = -stepsEachSide; step <= stepsEachSide; step++) {
-
-                double strike = centerStrike + (step * 2.5);
-
-                for (String optionType : new String[]{"CALL", "PUT"}) {
-
-                    String typeCode = optionType.equals("CALL") ? "C" : "P";
-                    String symbol = "KOSPI200_" + typeCode + "_" + strike;
-                    String displayName = "코스피200 " + (optionType.equals("CALL") ? "콜" : "풋") + " " + strike;
-
-                    int i = 1;
-                    ps.setString(i++, symbol);
-                    ps.setString(i++, displayName);
-                    ps.setInt(i++, 0);                                          // price_start
-                    ps.setInt(i++, 300);                                        // price_end
-                    ps.setInt(i++, 10);                                         // initial_price
-                    ps.setBigDecimal(i++, new java.math.BigDecimal("0.05"));    // tick_size
-                    ps.setBigDecimal(i++, new java.math.BigDecimal("2500"));   // tick_value
-                    ps.setBigDecimal(i++, new java.math.BigDecimal("250000")); // contract_multiplier (임의)
-                    ps.setString(i++, "KRW");
-                    ps.setBigDecimal(i++, new java.math.BigDecimal("0.1"));    // fee_per_contract
-                    ps.setLong(i++, 100000);                                   // maint_margin (임의)
-                    ps.setTime(i++, java.sql.Time.valueOf("08:45:00"));         // trade_start
-                    ps.setTime(i++, java.sql.Time.valueOf("18:35:00"));         // trade_end
-                    ps.setBoolean(i++, true);                                   // is_active
-                    ps.setDate(i++, java.sql.Date.valueOf("2026-09-10"));      // expiry_date
-                    ps.setString(i++, "KOSPI200OPT");
-                    ps.setInt(i++, sortOrder++);
-                    ps.setLong(i++, 300000);                                    // entry_margin (임의)
-                    ps.setLong(i++, 1500000);                                   // overnight_margin (임의)
-                    ps.setBoolean(i++, true);                                   // overnight_enabled
-                    ps.setString(i++, "OPTIONS");
-                    ps.setString(i++, "PERCENT");
-                    ps.setString(i++, optionType);
-                    ps.setBigDecimal(i++, new java.math.BigDecimal(String.valueOf(strike)));
-                    ps.setString(i++, "KOSPI200");
-
-                    ps.addBatch();
-                }
-            }
-
-            ps.executeBatch();
-            System.out.println("[서버] 코스피200 옵션체인 생성 완료 - 42개");
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-    }
 
 
 }

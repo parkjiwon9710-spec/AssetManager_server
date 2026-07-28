@@ -254,6 +254,131 @@ public class OrderDAO {
         return 0;
     }
 
+
+
+
+    public List<Order> getMyPendingOrders(int userId, String symbol) {
+        List<Order> list = new ArrayList<>();
+
+        String sql =
+                "SELECT * FROM orders " +
+                        "WHERE status='PENDING' " +
+                        "AND user_id=? " +          // 🔥 처음부터 SQL에서 필터링
+                        "AND symbol=? " +
+                        "AND order_type IN ('LIMIT','STOP','MIT','MARKET')";
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setInt(1, userId);
+            ps.setString(2, symbol);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Order o = new Order();
+                    o.setId(rs.getInt("id"));
+                    o.setUserId(rs.getInt("user_id"));
+                    o.setSymbol(rs.getString("symbol"));
+                    o.setSide(rs.getString("side"));
+                    o.setPrice(rs.getDouble("price"));
+                    o.setQty(rs.getInt("qty"));
+                    o.setOrderType(rs.getString("order_type"));
+                    o.setTriggerPrice(rs.getDouble("trigger_price"));
+                    list.add(o);
+                }
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        return list;
+    }
+
+    // 서버 OrderDAO에 추가
+    public void cancelAllPendingBySymbol(String symbol) {
+        String sql = "UPDATE orders SET status = 'CANCELLED' WHERE symbol = ? AND status = 'PENDING'";
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+
+            stmt.setString(1, symbol);
+            stmt.executeUpdate();
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+
+    public List<model.PendingOrderRow> loadPendingOrderRows(int userId) {
+        List<model.PendingOrderRow> result = new ArrayList<>();
+
+        String sql = "SELECT id, symbol, side, order_type, price, trigger_price, qty " +
+                "FROM orders WHERE user_id=? AND status='PENDING'";
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setInt(1, userId);
+            ResultSet rs = ps.executeQuery();
+
+            while (rs.next()) {
+                String symbol = rs.getString("symbol");
+                double currentPrice = Store.PriceStore.getLast(symbol);
+                String side = rs.getString("side");
+                String displaySide = "BUY".equals(side) ? "매수" : "매도";
+                String type = rs.getString("order_type");
+                String displayType = switch (type) {
+                    case "LIMIT" -> "지정가";
+                    case "MARKET" -> "시장가";
+                    case "MIT" -> "MIT";
+                    case "STOP" -> "STOP";
+                    default -> type;
+                };
+
+                double orderPrice = rs.getDouble("price") != 0 ? rs.getDouble("price") : rs.getDouble("trigger_price");
+                int qty = rs.getInt("qty");
+
+                result.add(new model.PendingOrderRow(
+                        rs.getInt("id"),
+                        symbol,
+                        side,
+                        type,
+                        orderPrice,
+                        currentPrice,
+                        displaySide + " / " + displayType,
+                        qty
+                ));
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        return result;
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 //일별손익 데이터가져오기 (고객,관리자 프로그램 둘 다)
     public List<DailyProfitRow> loadDailyProfit(
             int userId, Timestamp start, Timestamp end, List<String[]> symbols) {
@@ -262,11 +387,21 @@ public class OrderDAO {
         StringBuilder dynamicCols = new StringBuilder();
         System.out.println("===== SYMBOLS =====");
         for (String[] sym : symbols) {
-            String s = sym[0]; // e.g. "NASDAQ"
-            dynamicCols.append(String.format(
-                    ", COALESCE(SUM(CASE WHEN t.symbol='%s' THEN t.realized_pnl ELSE 0 END),0) profit_%s\n", s, s));
-            dynamicCols.append(String.format(
-                    ", COALESCE(SUM(CASE WHEN t.symbol='%s' THEN t.fee          ELSE 0 END),0) fee_%s\n",    s, s));
+            String s = sym[0];
+
+            if ("OPTIONS".equals(s)) {
+                dynamicCols.append(
+                        ", COALESCE(SUM(CASE WHEN t.symbol IN (SELECT symbol FROM market_specs WHERE market_type='OPTIONS') THEN t.realized_pnl ELSE 0 END),0) profit_OPTIONS"
+                );
+                dynamicCols.append(
+                        ", COALESCE(SUM(CASE WHEN t.symbol IN (SELECT symbol FROM market_specs WHERE market_type='OPTIONS') THEN t.fee ELSE 0 END),0) fee_OPTIONS"
+                );
+            } else {
+                dynamicCols.append(String.format(
+                        ", COALESCE(SUM(CASE WHEN t.symbol='%s' THEN t.realized_pnl ELSE 0 END),0) profit_%s", s, s));
+                dynamicCols.append(String.format(
+                        ", COALESCE(SUM(CASE WHEN t.symbol='%s' THEN t.fee ELSE 0 END),0) fee_%s", s, s));
+            }
         }
 
         String sql = """
@@ -418,10 +553,21 @@ public class OrderDAO {
         StringBuilder dynamicCols = new StringBuilder();
         for (String[] sym : symbols) {
             String s = sym[0];
-            dynamicCols.append(String.format(
-                    ", COALESCE(SUM(CASE WHEN th.symbol='%s' THEN th.realized_pnl ELSE 0 END),0) profit_%s", s, s));
-            dynamicCols.append(String.format(
-                    ", COALESCE(SUM(CASE WHEN th.symbol='%s' THEN th.fee ELSE 0 END),0) fee_%s", s, s));
+
+            if ("OPTIONS".equals(s)) {
+                // 🔥 옵션은 실제 심볼이 아니라 "대표 이름"이니, market_specs를 참조해서 합산
+                dynamicCols.append(
+                        ", COALESCE(SUM(CASE WHEN th.symbol IN (SELECT symbol FROM market_specs WHERE market_type='OPTIONS') THEN th.realized_pnl ELSE 0 END),0) profit_OPTIONS"
+                );
+                dynamicCols.append(
+                        ", COALESCE(SUM(CASE WHEN th.symbol IN (SELECT symbol FROM market_specs WHERE market_type='OPTIONS') THEN th.fee ELSE 0 END),0) fee_OPTIONS"
+                );
+            } else {
+                dynamicCols.append(String.format(
+                        ", COALESCE(SUM(CASE WHEN th.symbol='%s' THEN th.realized_pnl ELSE 0 END),0) profit_%s", s, s));
+                dynamicCols.append(String.format(
+                        ", COALESCE(SUM(CASE WHEN th.symbol='%s' THEN th.fee ELSE 0 END),0) fee_%s", s, s));
+            }
         }
 
         String sql =
@@ -867,12 +1013,21 @@ public class OrderDAO {
         StringBuilder dynamicCols = new StringBuilder();
         for (String[] sym : symbols) {
             String s = sym[0];
-            dynamicCols.append(String.format(
-                    ", COALESCE(SUM(CASE WHEN t.symbol='%s' THEN t.realized_pnl ELSE 0 END),0) profit_%s\n", s, s));
-            dynamicCols.append(String.format(
-                    ", COALESCE(SUM(CASE WHEN t.symbol='%s' THEN t.fee          ELSE 0 END),0) fee_%s\n",    s, s));
-        }
 
+            if ("OPTIONS".equals(s)) {
+                dynamicCols.append(
+                        ", COALESCE(SUM(CASE WHEN t.symbol IN (SELECT symbol FROM market_specs WHERE market_type='OPTIONS') THEN t.realized_pnl ELSE 0 END),0) profit_OPTIONS"
+                );
+                dynamicCols.append(
+                        ", COALESCE(SUM(CASE WHEN t.symbol IN (SELECT symbol FROM market_specs WHERE market_type='OPTIONS') THEN t.fee ELSE 0 END),0) fee_OPTIONS"
+                );
+            } else {
+                dynamicCols.append(String.format(
+                        ", COALESCE(SUM(CASE WHEN t.symbol='%s' THEN t.realized_pnl ELSE 0 END),0) profit_%s", s, s));
+                dynamicCols.append(String.format(
+                        ", COALESCE(SUM(CASE WHEN t.symbol='%s' THEN t.fee ELSE 0 END),0) fee_%s", s, s));
+            }
+        }
         String sql =
                 """
                 WITH RECURSIVE calendar AS (

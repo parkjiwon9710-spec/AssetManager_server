@@ -2,11 +2,13 @@ package service;
 
 import Market.MarketSpec;
 import Market.MarketSpecCache;
+import db.DBUtil;
 import model.OrderSide;
 import model.Position;
 
-import java.sql.Timestamp;
+import java.sql.*;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 public class PositionService {
@@ -54,9 +56,9 @@ public class PositionService {
             userService.applyBalanceChange(userId, -entryFee);
 
 
-            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
-            topInfoService.pushToUser(userId);
-            /// /////////////////////
+//            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
+//            topInfoService.pushToUser(userId);
+//            /// /////////////////////
             return;
         }
 
@@ -88,9 +90,9 @@ public class PositionService {
 
             positionDAO.update(p);
 
-            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
-            topInfoService.pushToUser(userId);
-            /// /////////////////////
+//            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
+//            topInfoService.pushToUser(userId);
+//            /// /////////////////////
             return;
         }
 
@@ -105,7 +107,7 @@ public class PositionService {
                         : p.getAvgPrice() - price;
 
         double ticks = Math.round(priceDiff / spec.getTickSize());
-        double rate = exchangeRateDAO.getRate(spec.getCurrency());
+        double rate = Store.ExchangeRateCache.getRate(spec.getCurrency());
         double tradingProfit = ticks * spec.getTickValue() * rate * closeQty;
 
         double fee = feeService.getFeeKRW(userId, symbol, price, closeQty);
@@ -133,9 +135,9 @@ public class PositionService {
             positionDAO.update(p);
 
 
-            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
-            topInfoService.pushToUser(userId);;
-            /// /////////////////////
+//            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
+//            topInfoService.pushToUser(userId);;
+//            /// /////////////////////
 
             return;
         }
@@ -168,9 +170,9 @@ public class PositionService {
             positionDAO.insert(np);
 
 
-            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
-            topInfoService.pushToUser(userId);
-            /// /////////////////////
+//            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
+//            topInfoService.pushToUser(userId);
+//            /// /////////////////////
         }
     }
 
@@ -226,6 +228,88 @@ public class PositionService {
     public List<Position> getAllPositions(int userId) {  // 유저별 (로스컷 등에서 이미 사용 중)
         return positionDAO.findAllByUser(userId);
     }
+    public Position getPositionById(int id) {
+        return positionDAO.findById(id);
+    }
+
+
+
+    public List<Position> findPositionsBySymbol(String symbol){
+
+        List<Position> list = new ArrayList<>();
+
+        String sql =
+                "SELECT user_id, symbol, direction, qty " +
+                        "FROM positions " +
+                        "WHERE symbol=?";
+
+        try(
+                Connection conn = DBUtil.getConnection();
+                PreparedStatement ps = conn.prepareStatement(sql)
+        ){
+
+            ps.setString(1, symbol);
+
+            ResultSet rs = ps.executeQuery();
+
+            while(rs.next()){
+
+                Position p = new Position();
+
+                p.setUserId(rs.getInt("user_id"));
+                p.setSymbol(rs.getString("symbol"));
+                p.setDirection(rs.getString("direction"));
+                p.setQty(rs.getInt("qty"));
+
+                list.add(p);
+            }
+
+        }catch(Exception e){
+            e.printStackTrace();
+        }
+
+        return list;
+    }
+
+    public List<Position> findPositionsBySymbolAndUser(int userId, String symbol) {
+
+        List<Position> list = new ArrayList<>();
+
+        String sql =
+                "SELECT user_id, symbol, direction, qty " +
+                        "FROM positions " +
+                        "WHERE user_id=? AND symbol=?";
+
+        try (
+                Connection conn = DBUtil.getConnection();
+                PreparedStatement ps = conn.prepareStatement(sql)
+        ) {
+
+            ps.setInt(1, userId);
+            ps.setString(2, symbol);
+
+            try (ResultSet rs = ps.executeQuery()) {
+
+                while (rs.next()) {
+
+                    Position p = new Position();
+
+                    p.setUserId(rs.getInt("user_id"));
+                    p.setSymbol(rs.getString("symbol"));
+                    p.setDirection(rs.getString("direction"));
+                    p.setQty(rs.getInt("qty"));
+
+                    list.add(p);
+                }
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        return list;
+    }
+
 
 //    //public List<Position> getAllPositions() {           // 전체 (checkTpSl용) 이었지만 지금 안씀
 //        return positionDAO.findAll();
@@ -259,7 +343,7 @@ public class PositionService {
 
                 double priceDiff = "LONG".equals(dir) ? currentPrice - avg : avg - currentPrice;
                 double ticks = Math.round(priceDiff / spec.getTickSize());
-                double rate = exchangeRateDAO.getRate(spec.getCurrency());
+                double rate = Store.ExchangeRateCache.getRate(spec.getCurrency());
 
                 total += ticks * spec.getTickValue() * rate * qty;
             }
@@ -363,5 +447,43 @@ public void closePosition(Position pos, double price, String reason) {
     }
 }
 
+    public List<model.PositionRow> loadPositionRows(int userId) {
+        List<model.PositionRow> result = new ArrayList<>();
+
+        String sql = "SELECT id, symbol, qty, avg_price, direction FROM positions WHERE user_id=?";
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setInt(1, userId);
+            ResultSet rs = ps.executeQuery();
+
+            while (rs.next()) {
+                String symbol = rs.getString("symbol");
+                double currentPrice = Store.PriceStore.getLast(symbol);
+                int qty = rs.getInt("qty");
+                double avg = rs.getDouble("avg_price");
+                String dir = rs.getString("direction");
+                String displaySide = "LONG".equals(dir) ? "매수" : "매도";
+
+                Market.MarketSpec spec = Market.MarketSpecCache.get(symbol);
+
+                double priceDiff = "LONG".equals(dir) ? currentPrice - avg : avg - currentPrice;
+                double ticks = Math.round(priceDiff / spec.getTickSize());
+                double rate = Store.ExchangeRateCache.getRate(spec.getCurrency());
+                double pnl = ticks * spec.getTickValue() * rate * qty;
+
+                result.add(new model.PositionRow(
+                        rs.getInt("id"), symbol, avg, currentPrice,
+                        displaySide, qty, String.format("%.2f", pnl)
+                ));
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return result;
+    }
 
 }

@@ -1,0 +1,76 @@
+/*
+ * ===== TODO: 로스컷 강제청산 순환참조 리팩토링 (방법 A) =====
+ *
+ * [현재 상황]
+ * PositionService.forcecloseAllPositions() (로스컷 강제청산)이
+ * OrderExecutionService.executeMarket()을 재사용하지 못하고,
+ * OrderDAO + applyTrade()로 직접 처리하고 있음.
+ *
+ * 이유: 순환참조 때문.
+ *   OrderExecutionService → RiskService → PositionService
+ *   여기서 PositionService.forcecloseAllPositions()가 다시
+ *   OrderExecutionService.executeMarket()을 호출하려 하면
+ *   PositionService → OrderExecutionService 역참조가 생겨 순환 구조가 됨.
+ *
+ * (참고로 오버나잇 강제청산은 이 문제가 없음:
+ *   OvernightProcessor → OrderService → OrderExecutionService
+ *   OrderService가 PositionService를 안 갖고 있어서 순환 안 생김.
+ *   그래서 오버나잇은 OrderService.placeForceCloseOrder()를 정상적으로 씀.)
+ *
+ * [리팩토링 방향 - 방법 A]
+ * forcecloseAllPositions()를 PositionService에서 빼서
+ * OrderExecutionService 쪽으로 이동.
+ *
+ *   // OrderExecutionService.java 로 이동
+ *   public void forcecloseAllPositions(int userId) {
+ *       List<Position> positions = positionService.getAllPositions(userId);
+ *       for (Position p : positions) {
+ *           OrderSide closeSide = p.isLong() ? OrderSide.SELL : OrderSide.BUY;
+ *           double executionPrice = closeSide == OrderSide.BUY
+ *                   ? Store.PriceStore.getBestAsk(p.getSymbol())
+ *                   : Store.PriceStore.getBestBid(p.getSymbol());
+ *           if (Double.isNaN(executionPrice) || executionPrice <= 0) continue;
+ *           executeMarket(userId, p.getSymbol(), closeSide, p.getQty(), executionPrice,
+ *                   false, 0, false, 0);
+ *       }
+ *   }
+ *
+ * 효과:
+ *   - PositionService는 순수하게 "포지션 데이터 조회/저장"만 담당
+ *   - "청산 실행"이라는 행위는 OrderExecutionService 계층에 통일됨
+ *     (로스컷도 오버나잇도 결국 같은 계층에서 실행되는 구조로 일관성 확보)
+ *   - RiskService는 PositionService를 여전히 조회용으로만 쓰므로 순환 없음
+ *
+ * 호출부 변경 필요:
+ *   OrderExecutionService.checkLiquidation() 안에서
+ *   positionService.forcecloseAllPositions(userId)
+ *   →  this.forcecloseAllPositions(userId)  로 변경
+ *
+ * [주의 - 리팩토링 시 반드시 회귀 테스트]
+ *   - 로스컷 강제청산 실제 트리거 (증거금 부족 상태로 시세 움직여서 자동 청산되는지)
+ *   - 기존 executeMarket()이 하던 부가 처리
+ *     (positionService.applyTrade, TRADE_EXECUTED 이벤트 전송, topInfoService.pushToUser 등)
+ *     가 그대로 다 실행되는지 빠짐없이 확인
+ *   - 옮긴 후 PositionService.forcecloseAllPositions()가 쓰던
+ *     "LIQUIDATION" 사유 표기, TP/SL 개념 없음 처리 등 로스컷 고유 로직이 안 빠졌는지 확인
+ *
+ * ===== TODO 별개 건: 오버나잇/로스컷 락 정책 확정 완료 (2026-07-28) =====
+ *
+ * MarketSessionManager.lockSymbol/unlockSymbol은 만들어져 있었지만
+ * 실제로 isSymbolLocked()를 체크하는 코드가 없어서 사실상 껍데기였음.
+ *
+ * 결정된 정책:
+ *   - checkLiquidation(로스컷) → 락 체크 넣지 않음
+ *     (로스컷은 회사 리스크 직결, 최우선 순위. 오버나잇 처리 중이라도
+ *      로스컷 조건 충족 시 반드시 즉시 실행되어야 함. 특히 장마감 시각
+ *      == 오버나잇 처리 시각인 경우, 마지막 틀에 로스컷을 놓치면
+ *      재시도 기회 없이 그날 로스컷이 누락될 수 있음)
+ *   - processPendingOrders, checkTpSl → 락 체크 추가함
+ *     (오버나잇 처리 중 데이터 경합 방지. 로스컷보다 우선순위 낮아
+ *      잠깐 지연되는 건 허용 가능하다고 판단)
+ *
+ * 사용담보 리셋 스케줄러(매일 07:00, OvernightMarginStore.clearAll())도
+ * 이번에 신설 완료. 국내선물/옵션 15시경 마감, 해외선물 05시 마감 사이클
+ * 감안해서 07:00으로 설정 (해외선물 마감 이후 + 다음 사이클 15시 마감 이전
+ * 안전 구간).
+ */

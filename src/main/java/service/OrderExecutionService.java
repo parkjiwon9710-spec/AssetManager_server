@@ -11,10 +11,15 @@ import server.SessionManager;
 
 import java.util.List;
 
+
+/// ////checkLiquidation → 락 체크 추가하지 않음 (로스컷 최우선 원칙 유지)
+/// processPendingOrders, checkTpSl → 락 체크 추가 (오버나잇 처리 중 데이터 경합 방지, 약간의 지연은 허용)
+///
 public class OrderExecutionService {
 
     private final OrderDAO orderDAO = new OrderDAO();
     private final PositionService positionService = new PositionService();
+    private final TopInfoService topInfoService = new TopInfoService();
     private final RiskService riskService = new RiskService();
     // 시장가/체결 처리 공통 로직 (기존 DemoServer의 ORDER_REQUEST 인라인 로직을 여기로 이동)
     public int executeMarket(int userId, String symbol, OrderSide side, int qty, double executionPrice,
@@ -33,6 +38,8 @@ public class OrderExecutionService {
             SessionManager.sendEventToCustomer(userId, event);
 
             clearLiquidationIfNoPosition(userId);
+
+            topInfoService.pushToUser(userId);   // 🔥 여기 한 곳으로 통합
         }
 
         return orderId;
@@ -56,6 +63,11 @@ public class OrderExecutionService {
     // 🔥 핵심: 매 tick마다 미체결 주문들 검사해서 조건 맞으면 체결
     public void processPendingOrders(String symbol, double prevPrice, double currentPrice,
                                      double bestBid, double bestAsk) {
+
+        if (MarketSessionManager.isSymbolLocked(symbol)) {
+            return;   // 🔥 오버나잇 처리 중이면 스킵
+        }
+
 
         if (!MarketSpecCache.isTrading(symbol)) {
             return;
@@ -125,6 +137,8 @@ public class OrderExecutionService {
 /// /////////로스컷관련메소드//////////
     public void checkLiquidation(String symbol, double price) {
 
+        // 🔥 락 체크 넣지 않음 — 로스컷은 오버나잇 처리 중에도 반드시 동작해야 함
+
         List<Integer> userIds = positionService.getUsersBySymbol(symbol);
 
         for (int userId : userIds) {
@@ -159,6 +173,11 @@ public class OrderExecutionService {
     /// ///////////////////////tpsl체크관련메소드/////////////
 
     public void checkTpSl(String symbol, double prevPrice, double currentPrice) {
+
+        if (MarketSessionManager.isSymbolLocked(symbol)) {
+            return;  // 🔥 오버나잇 처리 중이면 스킵
+        }
+
 
         for (Position pos : positionService.getActiveTpSlPositionsBySymbol(symbol))  {
 

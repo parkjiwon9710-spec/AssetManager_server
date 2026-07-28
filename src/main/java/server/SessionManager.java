@@ -54,7 +54,7 @@ public class SessionManager {
         } else {
             customerConnections.remove(userId);
             customerSessionInfo.remove(userId);
-
+            chartSubscriptions.remove(userId);// 🔥 추가 - 연결 끊기면 차트 구독도 정리
             // 변경 - 연결이 끊기면 카운트 무관하게 완전 제거 (모든 창이 사실상 닫힌 거니까)
             for (Map<Integer, Integer> counts : symbolSubscriberCounts.values()) {
                 counts.remove(userId);
@@ -84,6 +84,13 @@ public class SessionManager {
         String json = gson.toJson(message);
         for (ChannelHandlerContext adminCtx : adminConnections.values()) {
             adminCtx.writeAndFlush(json + "\n");
+        }
+    }
+    //접속중인 고객 전원한테??
+    public static void broadcastToCustomers(Object message) {
+        String json = gson.toJson(message);
+        for (ChannelHandlerContext ctx : customerConnections.values()) {
+            ctx.writeAndFlush(json + "\n");
         }
     }
 /// ///////////////////////////////주문창 맨 위 리프레쉬용도 담보금같은거////////////
@@ -157,4 +164,39 @@ public class SessionManager {
         }
     }
 
+
+
+
+
+    /////////////// 🔥 차트 전용 구독 - 고객당 차트창 1개, 종목+시간봉 하나만 추적
+    private static class ChartSubscription {
+        String symbol;
+        String timeFrame;
+        ChartSubscription(String symbol, String timeFrame) {
+            this.symbol = symbol;
+            this.timeFrame = timeFrame;
+        }
+    }
+
+    private static final Map<Integer, ChartSubscription> chartSubscriptions = new ConcurrentHashMap<>();
+
+    public static void setChartSubscription(int userId, String symbol, String timeFrame) {
+        chartSubscriptions.put(userId, new ChartSubscription(symbol, timeFrame));
+    }
+    public static void removeChartSubscription(int userId) {
+        chartSubscriptions.remove(userId);
+    }
+
+
+    public static List<Integer> getChartSubscribers(String symbol, String timeFrame) {
+        List<Integer> result = new java.util.ArrayList<>();
+        for (Map.Entry<Integer, ChartSubscription> entry : chartSubscriptions.entrySet()) {
+            ChartSubscription sub = entry.getValue();
+            if (symbol.equals(sub.symbol) && timeFrame.equals(sub.timeFrame)) {
+                result.add(entry.getKey());
+            }
+        }
+        return result;
+    }
+    ///////////////
 }

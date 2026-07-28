@@ -1,7 +1,7 @@
 package server;
 
 import Market.MarketContext;
-import com.google.gson.Gson;
+import com.google.gson.*;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -14,20 +14,25 @@ import io.netty.handler.codec.string.StringEncoder;
 import model.*;
 import service.*;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.Timestamp;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Scanner;
-import java.util.concurrent.Executors;
+import java.time.LocalTime;
+import java.util.*;
 
 public class DemoServer {
 
-    private static final Gson gson = new Gson();
+    private static final Gson gson = new GsonBuilder()
+            .registerTypeAdapter(LocalTime.class, (JsonSerializer<LocalTime>) (src, typeOfSrc, context) ->
+                    new JsonPrimitive(src.toString()))
+            .registerTypeAdapter(LocalTime.class, (JsonDeserializer<LocalTime>) (json, typeOfT, context) ->
+                    LocalTime.parse(json.getAsString()))
+            .create();
     private static final UserDAO userDAO = new UserDAO();
     private static final BlacklistDAO blacklistDAO = new BlacklistDAO();
     private static final service.OrderDAO orderDAO = new service.OrderDAO();
     private static final service.PositionService positionService = new service.PositionService();
+//    private static final service.OrderService orderService = new service.OrderService();
     private static final service.RiskService riskService = new service.RiskService();
     private static final service.OrderExecutionService orderExecutionService = new service.OrderExecutionService();
     private static final RealtimePnlService realtimePnlService = new RealtimePnlService();
@@ -35,6 +40,7 @@ public class DemoServer {
     private static final service.TradeHistoryDAO tradeHistoryDAO = new service.TradeHistoryDAO();
     private static final service.AdminDepositService depositService = new AdminDepositService();
     private static final service.TopInfoService topInfoService = new TopInfoService();
+    private static final service.PositionPanelService positionPanelService = new PositionPanelService();
     private static final service.CustomerDepositService customerDepositService = new CustomerDepositService();
     private static final service.DepositHistoryService depositHistoryService = new DepositHistoryService();
     private static final service.ChatDAO chatDAO = new service.ChatDAO();
@@ -51,17 +57,28 @@ public class DemoServer {
     private static final service.CompanyAccountDAO companyAccountDAO = new service.CompanyAccountDAO();
     private static final service.MarketSpecDAO marketSpecDAO = new service.MarketSpecDAO();
     private static final service.SystemQtyLimitDAO systemQtyLimitDAO = new service.SystemQtyLimitDAO();
+    private static final service.SystemTradeModeDAO systemTradeModeDAO = new service.SystemTradeModeDAO();
+    private static final service.SymbolTradeSettingDAO symbolTradeSettingDAO = new SymbolTradeSettingDAO();
+    private static final service.OrderService orderService = new OrderService(orderExecutionService);
+
+    private static final service.UserStatusDAO userStatusDAO = new UserStatusDAO();
+    private static final service.SoundSettingDAO soundSettingDAO = new SoundSettingDAO();
+
+    private static final service.NoticeService noticeService = new NoticeService();
+
+
+    private static final service.ChartService chartService = new ChartService();
 
     public static void main(String[] args) throws InterruptedException {
 
 
 
 
-        // 🔥 옵션 체인이 아직 없으면 생성 (있으면 조용히 스킵)
-        new service.MarketSpecDAO().generateKospiOptionChain();
 
-//서버 실행할 때 마켓스피씨캐시 로드
-        Market.MarketSpecCache.load();   // 추가
+//서버 실행할 때 마켓스피씨캐시, 환율 로드
+
+        Market.MarketSpecCache.load();
+        Store.ExchangeRateCache.load();
 
 
 // 🔥 새 코드 - 모든 종목 등록
@@ -120,27 +137,42 @@ public class DemoServer {
                 RealtimePnlResponse response = new RealtimePnlResponse(rows);
                 SessionManager.broadcastToAdmins(response);
 
-                System.out.println("[서버] 실시간손익 갱신 push 완료 - " + rows.size() + "건, " + java.time.LocalTime.now());
+                System.out.println("[서버] 관리자 실시간종합현황 갱신 push 완료 - " + rows.size() + "건, " + java.time.LocalTime.now());
             } catch (Exception e) {
                 e.printStackTrace();
             }
         }, 0, 10, java.util.concurrent.TimeUnit.SECONDS);
         /// ////////////////////
 
-/// ////////////////유저들 탑인포패널 담보금같은 정보 업데이트스케줄러.////
+        /// ///정기적으로 업데이트스케줄러!!!!!!!!!!!!!!///////////////
+/// ////////////////유저들 탑인포패널 담보금같은 정보 그리고 포지션패널도 정기적으로 업데이트스케줄러.////
         java.util.concurrent.Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
             try {
                 int count = 0;
                 for (Integer userId : SessionManager.getConnectedCustomerIds()) {
                     topInfoService.pushToUser(userId);
+                    positionPanelService.pushToUser(userId);
                     count++;
                 }
-                System.out.println("[서버] TopInfo 정기 push 완료 - " + count + "명, " + java.time.LocalTime.now());   // 🔥 로그 추가
+                System.out.println("[서버] TopInfo 정기 push 완료 - " + count + "명, " + java.time.LocalTime.now());
+                System.out.println("[서버] PositionPanel 정기 push 완료 - " + count + "명, " + java.time.LocalTime.now());
             } catch (Exception e) {
                 e.printStackTrace();
             }
-        }, 0, 20, java.util.concurrent.TimeUnit.SECONDS);
+        }, 0, 10, java.util.concurrent.TimeUnit.SECONDS);
 /// /////////////////////////////////////////////
+
+
+        /// //오버나잇 스케줄러/////////
+        OvernightProcessor overnightProcessor = new OvernightProcessor(
+                orderService, positionService, marketSpecDAO, userService
+        );
+        OvernightProcessorHolder.init(overnightProcessor);
+
+        OvernightScheduler scheduler = new OvernightScheduler(overnightProcessor, marketSpecDAO);
+        OvernightSchedulerHolder.init(scheduler);
+        scheduler.start();
+        /// ///////////////////////////////////////////
 
 
         int port = 9000;
@@ -197,9 +229,21 @@ public class DemoServer {
                                                 System.out.println("[서버] 계정상태 차단 - userId: " + user.getId());
                                                 return;
                                             }
-                                            response = new LoginResponse(true, "로그인 성공", user.getId(), user.getUsername(), user.getName(), user.getRole(), user.getBalance());
+                                            // 마지막 로그인 갱신
+                                            userStatusDAO.updateLastLogin(user.getId());
+
+// 사운드 설정 조회
+                                            SoundSetting sound = soundSettingDAO.load(user.getId());
+
+                                            response = new LoginResponse(
+                                                    true, "로그인 성공", user.getId(), user.getUsername(), user.getName(), user.getRole(), user.getBalance(),
+                                                    sound.isBuyExecuted(), sound.isSellExecuted(),
+                                                    sound.isBuyReserved(), sound.isSellReserved(),
+                                                    sound.isOrderModified(), sound.isOrderCancelled()
+                                            );
+
                                             SessionManager.register(user.getId(), user.getUsername(), user.getName(), mac, user.getRole(), ctx);
-                                            System.out.println("[서버] 로그인 성공 - userId: " + user.getId());   // 성공 로그도 추가해두면 좋음
+                                            System.out.println("[서버] 로그인 성공 - userId: " + user.getId());
 
                                         } else {
                                             response = new LoginResponse(false, "아이디 또는 비밀번호가 틀렸습니다");
@@ -401,9 +445,19 @@ public class DemoServer {
                                     } else if ("DAILY_PROFIT_REQUEST".equals(type)) {
                                         DailyProfitRequest request = gson.fromJson(msg, DailyProfitRequest.class);
 
-                                        List<String[]> symbols = Market.MarketSpecCache.getAll().stream()
-                                                .map(s -> new String[]{s.getSymbol(), s.getDisplayName()})
-                                                .collect(java.util.stream.Collectors.toList());
+                                        // 변경 - 옵션은 제외하고, "OPTIONS" 대표 항목 하나만 추가
+                                        List<String[]> symbols = new ArrayList<>();
+                                        boolean hasOption = false;
+                                        for (Market.MarketSpec s : Market.MarketSpecCache.getAll()) {
+                                            if ("OPTIONS".equals(s.getMarketType())) {
+                                                hasOption = true;
+                                                continue;   // 개별 옵션 42개는 건너뜀
+                                            }
+                                            symbols.add(new String[]{s.getSymbol(), s.getDisplayName()});
+                                        }
+                                        if (hasOption) {
+                                            symbols.add(new String[]{"OPTIONS", "옵션"});   // 대표 항목 하나
+                                        }
 
                                         List<DailyProfitRow> rows = orderDAO.loadDailyProfit(
                                                 request.getUserId(),
@@ -417,9 +471,19 @@ public class DemoServer {
                                     } else if ("CUSTOMER_PROFIT_REQUEST".equals(type)) {
                                         CustomerProfitRequest request = gson.fromJson(msg, CustomerProfitRequest.class);
 
-                                        List<String[]> symbols = Market.MarketSpecCache.getAll().stream()
-                                                .map(s -> new String[]{s.getSymbol(), s.getDisplayName()})
-                                                .collect(java.util.stream.Collectors.toList());
+                                        // 변경 - 옵션은 제외하고, "OPTIONS" 대표 항목 하나만 추가
+                                        List<String[]> symbols = new ArrayList<>();
+                                        boolean hasOption = false;
+                                        for (Market.MarketSpec s : Market.MarketSpecCache.getAll()) {
+                                            if ("OPTIONS".equals(s.getMarketType())) {
+                                                hasOption = true;
+                                                continue;   // 개별 옵션 42개는 건너뜀
+                                            }
+                                            symbols.add(new String[]{s.getSymbol(), s.getDisplayName()});
+                                        }
+                                        if (hasOption) {
+                                            symbols.add(new String[]{"OPTIONS", "옵션"});   // 대표 항목 하나
+                                        }
 
                                         List<model.CustomerProfitRow> rows = orderDAO.loadCustomerProfitSummary(
                                                 request.getKeyword(),
@@ -623,9 +687,19 @@ public class DemoServer {
                                         Timestamp start = new Timestamp(request.getStartMillis());
                                         Timestamp end = new Timestamp(request.getEndMillis());
 
-                                        List<String[]> symbols = Market.MarketSpecCache.getAll().stream()
-                                                .map(s -> new String[]{s.getSymbol(), s.getDisplayName()})
-                                                .collect(java.util.stream.Collectors.toList());
+                                        // 변경 - 옵션은 제외하고, "OPTIONS" 대표 항목 하나만 추가
+                                        List<String[]> symbols = new ArrayList<>();
+                                        boolean hasOption = false;
+                                        for (Market.MarketSpec s : Market.MarketSpecCache.getAll()) {
+                                            if ("OPTIONS".equals(s.getMarketType())) {
+                                                hasOption = true;
+                                                continue;   // 개별 옵션 42개는 건너뜀
+                                            }
+                                            symbols.add(new String[]{s.getSymbol(), s.getDisplayName()});
+                                        }
+                                        if (hasOption) {
+                                            symbols.add(new String[]{"OPTIONS", "옵션"});   // 대표 항목 하나
+                                        }
 
                                         Map<String, Double> summary = orderDAO.loadEntireSummary(start, end);
                                         List<model.EntireDailyRow> dailyRows = orderDAO.loadDailyAggregateList(start, end, symbols);
@@ -1009,12 +1083,12 @@ public class DemoServer {
                                     } else if ("MARKET_OPERATION_LOAD_REQUEST".equals(type)) {
 
                                         model.DomesticMarketData domestic = marketSpecDAO.loadDomesticDataModel();
+                                        model.OptionMarketData option = marketSpecDAO.loadOptionDataModel();   // 🔥 추가
                                         model.HsiMarketData hsi = marketSpecDAO.loadHsiDataModel();
                                         List<model.OverseasMarketRow> overseas = marketSpecDAO.loadOverseasDataList();
 
-                                        MarketOperationLoadResponse response = new MarketOperationLoadResponse(domestic, hsi, overseas);
+                                        MarketOperationLoadResponse response = new MarketOperationLoadResponse(domestic, option, hsi, overseas);   // 🔥 순서 맞춰서 4개
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
-
                                     } else if ("DOMESTIC_SAVE_REQUEST".equals(type)) {
                                         DomesticSaveRequest request = gson.fromJson(msg, DomesticSaveRequest.class);
 
@@ -1023,10 +1097,35 @@ public class DemoServer {
                                                 request.isHolidayToday(), request.getExpiryDate()
                                         );
 
+                                        OvernightSchedulerHolder.get().reload();
+
                                         MarketOperationSaveResponse response = new MarketOperationSaveResponse(true, "국내선물 저장 완료");
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
                                         System.out.println("[서버] 국내선물 운영시간 저장 완료");
 
+                                    } else if ("OPTION_SAVE_REQUEST".equals(type)) {
+                                        OptionSaveRequest request = gson.fromJson(msg, OptionSaveRequest.class);
+
+                                        try {
+                                            marketSpecDAO.saveOptionData(
+                                                    request.getTradeStart(),
+                                                    request.getTradeEnd(),
+                                                    request.isHolidayToday(),
+                                                    request.getExpiryDate()
+                                            );
+
+
+                                            OvernightSchedulerHolder.get().reload();
+
+                                            MarketOperationSaveResponse response = new MarketOperationSaveResponse(true, "옵션 저장 완료");   // 🔥 메시지 추가
+                                            ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                            System.out.println("[서버] 옵션 운영시간 저장 완료");
+
+                                        } catch (Exception e) {
+                                            e.printStackTrace();
+                                            MarketOperationSaveResponse response = new MarketOperationSaveResponse(false, "옵션 저장 실패");   // 🔥 메시지 추가
+                                            ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        }
                                     } else if ("HSI_SAVE_REQUEST".equals(type)) {
                                         HsiSaveRequest request = gson.fromJson(msg, HsiSaveRequest.class);
 
@@ -1034,6 +1133,8 @@ public class DemoServer {
                                                 request.getStart1(), request.getEnd1(), request.getStart2(), request.getEnd2(),
                                                 request.getStart3(), request.getEnd3(), request.isHolidayToday(), request.getExpiryDate()
                                         );
+
+                                        OvernightSchedulerHolder.get().reload();
 
                                         MarketOperationSaveResponse response = new MarketOperationSaveResponse(true, "항셍 저장 완료");
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
@@ -1043,6 +1144,9 @@ public class DemoServer {
                                         OverseasSaveRequest request = gson.fromJson(msg, OverseasSaveRequest.class);
 
                                         marketSpecDAO.saveOverseasDataList(request.getRows());
+
+
+                                        OvernightSchedulerHolder.get().reload();
 
                                         MarketOperationSaveResponse response = new MarketOperationSaveResponse(true, "해외선물 저장 완료");
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
@@ -1062,6 +1166,168 @@ public class DemoServer {
                                         SystemQtyLimitSaveResponse response = new SystemQtyLimitSaveResponse(true);
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
                                         System.out.println("[서버] 시스템 계약수 한도 저장 완료");
+                                    } else if ("TRADE_LIMIT_LOAD_REQUEST".equals(type)) {
+
+                                    Market.MarketSpec overseas = marketSpecDAO.getFirstOverseasSpec();
+                                    Market.MarketSpec domestic = marketSpecDAO.getDomesticSpec();
+                                    Market.MarketSpec option = marketSpecDAO.getOptionSpec();
+                                    model.SystemTradeMode mode = systemTradeModeDAO.getSettings();
+
+                                    model.MarketMarginInfo overseasInfo = overseas == null ? null : new model.MarketMarginInfo(
+                                            overseas.getEntryMargin(), overseas.getMaintMargin(), overseas.getOvernightMargin(), overseas.isOvernightEnabled()
+                                    );
+                                    model.MarketMarginInfo domesticInfo = domestic == null ? null : new model.MarketMarginInfo(
+                                            domestic.getEntryMargin(), domestic.getMaintMargin(), domestic.getOvernightMargin(), domestic.isOvernightEnabled()
+                                    );
+                                    model.MarketMarginInfo optionInfo = option == null ? null : new model.MarketMarginInfo(
+                                            option.getEntryMargin(), option.getMaintMargin(), option.getOvernightMargin(), option.isOvernightEnabled()
+                                    );
+
+                                    model.TradeLimitSettings settings = new model.TradeLimitSettings(overseasInfo, domesticInfo, optionInfo, mode);
+
+                                    TradeLimitLoadResponse response = new TradeLimitLoadResponse(settings);
+                                    ctx.writeAndFlush(gson.toJson(response) + "\n");
+
+                                } else if ("ENTRY_MARGIN_SAVE_REQUEST".equals(type)) {
+                                    EntryMarginSaveRequest request = gson.fromJson(msg, EntryMarginSaveRequest.class);
+
+                                    model.SystemTradeMode mode = systemTradeModeDAO.getSettings();
+                                    if (mode == null) mode = new model.SystemTradeMode();
+
+                                    if (request.isGlobal()) {
+                                        mode.setOverseasEntryMarginMode("GLOBAL");
+                                        marketSpecDAO.updateOverseasEntryMargin(request.getOverseasValue());
+                                    } else {
+                                        mode.setOverseasEntryMarginMode("PER_SYMBOL");
+                                    }
+
+
+                                        // 국내선물/옵션: 모드 구분 없이 항상 직접 반영
+                                        marketSpecDAO.updateDomesticEntryMargin(request.getDomesticValue());
+                                        marketSpecDAO.updateOptionEntryMargin(request.getOptionValue());
+
+                                    systemTradeModeDAO.save(mode);
+
+                                    TradeLimitSaveResponse response = new TradeLimitSaveResponse(true, "엔트리 증거금 설정 저장완료");
+                                    ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                    System.out.println("[서버] 엔트리 증거금 설정 저장 완료");
+                                }
+                                    else if ("MAINT_MARGIN_SAVE_REQUEST".equals(type)) {
+                                        MaintMarginSaveRequest request = gson.fromJson(msg, MaintMarginSaveRequest.class);
+                                        model.SystemTradeMode mode = systemTradeModeDAO.getSettings();
+                                        if (mode == null) mode = new model.SystemTradeMode();
+
+                                        // 해외선물: 기존 GLOBAL/PER_SYMBOL 로직 유지
+                                        if (request.isGlobal()) {
+                                            mode.setOverseasMaintMarginMode("GLOBAL");
+                                            marketSpecDAO.updateOverseasMaintMargin(request.getOverseasValue());
+                                        } else {
+                                            mode.setOverseasMaintMarginMode("PER_SYMBOL");
+                                        }
+
+                                        // 국내선물/옵션: 모드 구분 없이 항상 직접 반영
+                                        marketSpecDAO.updateDomesticMaintMargin(request.getDomesticValue());
+                                        marketSpecDAO.updateOptionMaintMargin(request.getOptionValue());
+
+                                        systemTradeModeDAO.save(mode);
+
+                                        TradeLimitSaveResponse response = new TradeLimitSaveResponse(true, "유지증거금 저장완료");
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        System.out.println("[서버] 유지증거금 저장 완료");
+                                    }
+                                    else if ("OVERNIGHT_SETTINGS_SAVE_REQUEST".equals(type)) {
+                                        OvernightSettingsSaveRequest request = gson.fromJson(msg, OvernightSettingsSaveRequest.class);
+
+                                        model.SystemTradeMode mode = systemTradeModeDAO.getSettings();
+                                        if (mode == null) mode = new model.SystemTradeMode();
+
+                                        // 국내선물
+                                        marketSpecDAO.updateDomesticOvernightMargin(request.getDomesticMarginValue());
+                                        marketSpecDAO.updateDomesticOvernightEnabled(request.isDomesticOvernightEnabled());
+
+                                        // 옵션
+                                        marketSpecDAO.updateOptionOvernightMargin(request.getOptionMarginValue());
+                                        marketSpecDAO.updateOptionOvernightEnabled(request.isOptionOvernightEnabled());
+
+                                        // 해외선물 담보금
+                                        if (request.isOverseasMarginGlobal()) {
+                                            mode.setOverseasOvernightMarginMode("GLOBAL");
+                                            marketSpecDAO.updateOverseasOvernightMargin(request.getOverseasMarginValue());
+                                        } else {
+                                            mode.setOverseasOvernightMarginMode("PER_SYMBOL");
+                                        }
+
+                                        // 해외선물 허용
+                                        String permissionMode = request.getOverseasPermissionMode();
+                                        mode.setOverseasPermissionMode(permissionMode);
+
+                                        if ("ALL_ENABLE".equals(permissionMode)) {
+                                            marketSpecDAO.updateOverseasOvernightEnabled(true);
+                                        } else if ("ALL_DISABLE".equals(permissionMode)) {
+                                            marketSpecDAO.updateOverseasOvernightEnabled(false);
+                                        }
+                                        // PER_SYMBOL이면 여기선 아무것도 안 건드림
+
+                                        systemTradeModeDAO.save(mode);
+
+                                        TradeLimitSaveResponse response = new TradeLimitSaveResponse(true, "오버나잇 설정 저장완료");
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        System.out.println("[서버] 오버나잇 설정 저장 완료");
+                                    }else if ("SYMBOL_VALUE_LOAD_REQUEST".equals(type)) {
+                                        SymbolValueLoadRequest request = gson.fromJson(msg, SymbolValueLoadRequest.class);
+
+                                        List<String> symbols = marketSpecDAO.getOverseasSymbols();
+                                        Map<String, Long> values = new LinkedHashMap<>();
+
+                                        for (String symbol : symbols) {
+                                            long value = switch (request.getMarginType()) {
+                                                case "ENTRY" -> symbolTradeSettingDAO.getEntryMargin(symbol);
+                                                case "LOSSCUT" -> symbolTradeSettingDAO.getMaintMargin(symbol);
+                                                case "OVERNIGHT" -> symbolTradeSettingDAO.getOvernightMargin(symbol);
+                                                default -> 0;
+                                            };
+                                            values.put(symbol, value);
+                                        }
+
+                                        SymbolValueLoadResponse response = new SymbolValueLoadResponse(values);
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+
+                                    } else if ("SYMBOL_VALUE_SAVE_REQUEST".equals(type)) {
+                                        SymbolValueSaveRequest request = gson.fromJson(msg, SymbolValueSaveRequest.class);
+
+                                        for (Map.Entry<String, Long> entry : request.getValues().entrySet()) {
+                                            switch (request.getMarginType()) {
+                                                case "ENTRY" -> symbolTradeSettingDAO.saveEntryMargin(entry.getKey(), entry.getValue());
+                                                case "LOSSCUT" -> symbolTradeSettingDAO.saveMaintMargin(entry.getKey(), entry.getValue());
+                                                case "OVERNIGHT" -> symbolTradeSettingDAO.saveOvernightMargin(entry.getKey(), entry.getValue());
+                                            }
+                                        }
+
+                                        TradeLimitSaveResponse response = new TradeLimitSaveResponse(true, "개별설정 저장완료");
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        System.out.println("[서버] 심볼별 값 설정 저장 완료");
+
+                                    } else if ("SYMBOL_PERMISSION_LOAD_REQUEST".equals(type)) {
+                                        List<String> symbols = marketSpecDAO.getOverseasSymbols();
+                                        Map<String, Boolean> values = new LinkedHashMap<>();
+
+                                        for (String symbol : symbols) {
+                                            values.put(symbol, symbolTradeSettingDAO.getOvernightEnabled(symbol));
+                                        }
+
+                                        SymbolPermissionLoadResponse response = new SymbolPermissionLoadResponse(values);
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+
+                                    } else if ("SYMBOL_PERMISSION_SAVE_REQUEST".equals(type)) {
+                                        SymbolPermissionSaveRequest request = gson.fromJson(msg, SymbolPermissionSaveRequest.class);
+
+                                        for (Map.Entry<String, Boolean> entry : request.getValues().entrySet()) {
+                                            symbolTradeSettingDAO.saveOvernightEnabled(entry.getKey(), entry.getValue());
+                                        }
+
+                                        TradeLimitSaveResponse response = new TradeLimitSaveResponse(true, "개별 허용설정 저장완료");
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        System.out.println("[서버] 심볼별 허용 설정 저장 완료");
                                     }
 
 
@@ -1071,7 +1337,7 @@ public class DemoServer {
 
 
 
-
+/// //////////////고객 프로그램에서 회사계좌 띄우는거??
                                     else if ("DW_ACCOUNT_INFO_REQUEST".equals(type)) {
                                         new Thread(() -> {
                                             DwAccountInfoRequest req = gson.fromJson(msg, DwAccountInfoRequest.class);
@@ -1079,6 +1345,218 @@ public class DemoServer {
                                             ctx.writeAndFlush(gson.toJson(new DwAccountInfoResponse(info)) + "\n");
                                         }).start();
                                     }
+/// //////////
+
+                                    /// ////////공지사항관련
+                                    else if ("NOTICE_LIST_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            List<Notice> list = noticeService.getNotices();
+                                            ctx.writeAndFlush(gson.toJson(new NoticeListResponse(list)) + "\n"); // 요청자에게만
+                                        }).start();
+                                    }
+
+                                    else if ("NOTICE_ADD_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            NoticeAddRequest req = gson.fromJson(msg, NoticeAddRequest.class);
+                                            boolean success = noticeService.addNotice(req.title, req.noticeType, req.contentRtf);
+
+                                            ctx.writeAndFlush(gson.toJson(new NoticeAddResult(
+                                                    success, success ? "등록 완료" : "등록 실패"
+                                            )) + "\n");
+
+                                            if (success) {
+                                                SessionManager.broadcastToAdmins(new NoticeChangedEvent());
+                                                SessionManager.broadcastToCustomers(new NoticeChangedEvent());
+                                            }
+                                        }).start();
+                                    }
+
+                                    else if ("NOTICE_UPDATE_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            NoticeUpdateRequest req = gson.fromJson(msg, NoticeUpdateRequest.class);
+                                            boolean success = noticeService.updateNotice(req.id, req.title, req.contentRtf, req.noticeType);
+
+                                            ctx.writeAndFlush(gson.toJson(new NoticeUpdateResult(
+                                                    success, success ? "수정 완료" : "수정 실패"
+                                            )) + "\n");
+
+                                            if (success) {
+                                                SessionManager.broadcastToAdmins(new NoticeChangedEvent());
+                                                SessionManager.broadcastToCustomers(new NoticeChangedEvent());
+                                            }
+                                        }).start();
+                                    }
+
+                                    else if ("NOTICE_DELETE_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            NoticeDeleteRequest req = gson.fromJson(msg, NoticeDeleteRequest.class);
+                                            boolean success = noticeService.deleteNotice(req.id);
+
+                                            ctx.writeAndFlush(gson.toJson(new NoticeDeleteResult(
+                                                    success, success ? "삭제 완료" : "삭제 실패"
+                                            )) + "\n");
+
+                                            if (success) {
+                                                SessionManager.broadcastToAdmins(new NoticeChangedEvent());
+                                                SessionManager.broadcastToCustomers(new NoticeChangedEvent());
+                                            }
+                                        }).start();
+                                    }
+
+
+                                    else if ("MUST_READ_NOTICE_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            MustReadNoticeRequest req = gson.fromJson(msg, MustReadNoticeRequest.class);
+                                            List<Notice> notices = noticeService.getMustReadNotices(req.userId);
+
+                                            ctx.writeAndFlush(gson.toJson(
+                                                    new MustReadNoticeResponse(req.requestId, notices)
+                                            ) + "\n");
+                                        }).start();
+                                    }
+
+                                    else if ("NOTICE_READ_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            NoticeReadRequest req = gson.fromJson(msg, NoticeReadRequest.class);
+                                            boolean success = noticeService.markNoticeRead(req.userId, req.noticeId);
+
+                                            ctx.writeAndFlush(gson.toJson(
+                                                    new NoticeReadResponse(req.requestId, success)
+                                            ) + "\n");
+
+                                            if (success) {
+                                                // 필독공지를 읽었다는 건 목록/상태가 바뀐 거니 관리자 쪽 통계 화면 있으면 여기도 broadcast 가능
+                                                // (지금 당장 필요 없으면 생략해도 무방)
+                                            }
+                                        }).start();
+                                    }
+                                    /// //////////
+
+
+                                    /// 환율 관련//////////////
+                                 else if ("EXCHANGE_RATE_ALL_REQUEST".equals(type)) {
+                                    // 클라이언트 최초 로그인 시 전체 환율 요청
+                                    ExchangeRateAllResponse response = new ExchangeRateAllResponse(Store.ExchangeRateCache.getAll());
+                                    ctx.writeAndFlush(gson.toJson(response) + "\n");
+
+                                } else if ("EXCHANGE_RATE_UPDATE_REQUEST".equals(type)) {
+                                    // 관리자가 환율 변경
+                                    ExchangeRateUpdateRequest request = gson.fromJson(msg, ExchangeRateUpdateRequest.class);
+
+                                    String sql = "UPDATE exchange_rates SET rate_to_krw=? WHERE currency=?";
+                                    try (Connection conn = db.DBUtil.getConnection();
+                                         PreparedStatement ps = conn.prepareStatement(sql)) {
+                                        ps.setDouble(1, request.getRate());
+                                        ps.setString(2, request.getCurrency());
+                                        ps.executeUpdate();
+
+                                        Store.ExchangeRateCache.load();   // 캐시 재로드
+
+                                        // 🔥 접속 중인 모든 고객에게 push
+                                        ExchangeRatePushEvent event = new ExchangeRatePushEvent(Store.ExchangeRateCache.getAll());
+                                        for (Integer userId : SessionManager.getConnectedCustomerIds()) {
+                                            SessionManager.sendToCustomer(userId, event);
+                                        }
+
+                                        ctx.writeAndFlush(gson.toJson(new MarketOperationSaveResponse(true, "환율 저장 완료")) + "\n");
+                                    } catch (Exception e) {
+                                        e.printStackTrace();
+                                        ctx.writeAndFlush(gson.toJson(new MarketOperationSaveResponse(false, "환율 저장 실패")) + "\n");
+                                    }
+                                }
+
+                                    //////////////
+
+
+                                    /// ///비번변경 및 사운드설정쪽
+                                    else if ("CHANGE_PASSWORD_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            ChangePasswordRequest req = gson.fromJson(msg, ChangePasswordRequest.class);
+
+                                            int result = userService.changePassword(req.userId, req.currentPw, req.newPw);
+
+                                            String message = switch (result) {
+                                                case 0 -> "비밀번호가 변경되었습니다.";
+                                                case -1 -> "현재 비밀번호가 일치하지 않습니다.";
+                                                case -2 -> "새 비밀번호는 4자 이상이어야 합니다.";
+                                                default -> "알 수 없는 오류가 발생했습니다.";
+                                            };
+
+                                            ctx.writeAndFlush(gson.toJson(new ChangePasswordResponse(result, message)) + "\n");
+                                        }).start();
+                                    }
+                                    else if ("SOUND_SETTING_LOAD_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            SoundSettingLoadRequest req = gson.fromJson(msg, SoundSettingLoadRequest.class);
+
+                                            SoundSetting setting = soundSettingDAO.load(req.userId);
+
+                                            ctx.writeAndFlush(gson.toJson(new SoundSettingLoadResponse(setting)) + "\n");
+                                        }).start();
+                                    }
+                                    else if ("SOUND_SETTING_SAVE_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            SoundSettingSaveRequest req = gson.fromJson(msg, SoundSettingSaveRequest.class);
+
+                                            boolean success = soundSettingDAO.save(req.userId, req.setting);
+
+                                            String message = success ? "저장되었습니다." : "저장 중 오류가 발생했습니다.";
+
+                                            ctx.writeAndFlush(gson.toJson(new SoundSettingSaveResponse(success, message)) + "\n");
+                                        }).start();
+                                    }
+                                    /// ////////////////////////////////
+
+                                else if ("PENDING_ORDERS_REQUEST".equals(type)) {
+                                    PendingOrdersRequest request = gson.fromJson(msg, PendingOrdersRequest.class);
+                                    List<Order> orders = orderDAO.getMyPendingOrders(request.getUserId(), request.getSymbol());   // 서버 OrderDAO 재사용
+                                    PendingOrdersResponse response = new PendingOrdersResponse(orders);
+                                    ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                    } else if ("POSITION_PANEL_DATA_REQUEST".equals(type)) {
+                                        PositionPanelDataRequest request = gson.fromJson(msg, PositionPanelDataRequest.class);
+                                        List<model.PositionRow> positions = positionService.loadPositionRows(request.getUserId());
+                                        List<model.PendingOrderRow> pending = orderDAO.loadPendingOrderRows(request.getUserId());
+                                        ctx.writeAndFlush(gson.toJson(new PositionPanelDataResponse(positions, pending)) + "\n");
+                                    } else if ("POSITION_REQUEST".equals(type)) {
+                                        PositionRequest request = gson.fromJson(msg, PositionRequest.class);
+                                        Position pos = positionService.getPosition(request.getUserId(), request.getSymbol());
+                                        ctx.writeAndFlush(gson.toJson(new PositionResponse(request.getRequestId(), pos)) + "\n");
+                                    } else if ("ALL_POSITIONS_REQUEST".equals(type)) {
+                                        AllPositionsRequest request = gson.fromJson(msg, AllPositionsRequest.class);
+                                        List<Position> positions = positionService.getAllPositions(request.getUserId());
+                                        ctx.writeAndFlush(gson.toJson(new AllPositionsResponse(request.getRequestId(), positions)) + "\n");
+                                    } else if ("POSITION_BY_ID_REQUEST".equals(type)) {
+                                        PositionByIdRequest request = gson.fromJson(msg, PositionByIdRequest.class);
+                                        Position pos = positionService.getPositionById(request.getId());
+                                        ctx.writeAndFlush(gson.toJson(new PositionByIdResponse(request.getRequestId(), pos)) + "\n");
+                                    }
+
+
+
+
+
+
+                                    else if ("CHART_HISTORY_REQUEST".equals(type)) {
+                                        ChartHistoryRequest request = gson.fromJson(msg, ChartHistoryRequest.class);
+                                        List<Map<String, Object>> candles = chartService.getChartData(request.symbol, TimeFrame.valueOf(request.timeFrame));
+                                        ChartHistoryResponse response = new ChartHistoryResponse(request.symbol, request.timeFrame, candles);
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+
+                                    } else if ("CHART_SUBSCRIBE_REQUEST".equals(type)) {
+                                        ChartSubscribeRequest request = gson.fromJson(msg, ChartSubscribeRequest.class);
+                                        SessionManager.setChartSubscription(request.userId, request.symbol, request.timeFrame);
+                                    }else if ("CHART_UNSUBSCRIBE_REQUEST".equals(type)) {
+                                        ChartUnsubscribeRequest request = gson.fromJson(msg, ChartUnsubscribeRequest.class);
+                                        SessionManager.removeChartSubscription(request.userId);
+                                    }
+
+                                    else if ("OVERNIGHT_PREVIEW_REQUEST".equals(type)) {
+                                        OvernightPreviewRequest request = gson.fromJson(msg, OvernightPreviewRequest.class);
+                                        OvernightInfo info = OvernightProcessorHolder.get().preview(request.userId);
+                                        OvernightPreviewResponse response = new OvernightPreviewResponse(info);
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                    }
+
 
 
 
