@@ -45,6 +45,8 @@ public class DemoServer {
     private static final service.DepositHistoryService depositHistoryService = new DepositHistoryService();
     private static final service.ChatDAO chatDAO = new service.ChatDAO();
     private static final service.AdminUserListService adminUserListService = new AdminUserListService();
+    private static final service.AdminPositionAggregateService adminPositionAggregateService = new service.AdminPositionAggregateService(adminUserListService, positionService, orderDAO);
+
     private static final service.AdminUserBasicService adminUserBasicService = new AdminUserBasicService();
     private static final service.AdminUserAccountService adminUserAccountService = new AdminUserAccountService(); // 필드
     private static final service.AdminUserDepositService adminUserDepositService = new AdminUserDepositService();
@@ -145,6 +147,18 @@ public class DemoServer {
         /// ////////////////////
 
         /// ///정기적으로 업데이트스케줄러!!!!!!!!!!!!!!///////////////
+
+        /// ////////////////////////관리자 고객 포지션 스케줄러
+        java.util.concurrent.Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
+            try {
+                server.AdminAllPositionsResponse response = adminPositionAggregateService.computeAll();
+                SessionManager.broadcastToAdmins(response);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }, 0, 5, java.util.concurrent.TimeUnit.SECONDS);
+        /// ////////////////////////
+
 /// ////////////////유저들 탑인포패널 담보금같은 정보 그리고 포지션패널도 정기적으로 업데이트스케줄러.////
         java.util.concurrent.Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
             try {
@@ -270,7 +284,30 @@ public class DemoServer {
                                         } else {
                                             System.out.println("[서버] userId=" + targetUserId + " 접속중이지 않음 (강제로그아웃 요청 무시)");
                                         }
-                                    } else if ("ORDER_REQUEST".equals(type)) {
+                                    } else if ("SCREEN_CAPTURE_REQUEST".equals(type)) {
+                                        ScreenCaptureRequest request = gson.fromJson(msg, ScreenCaptureRequest.class);
+
+                                        ChannelHandlerContext targetCtx = SessionManager.getCustomer(request.targetUserId);
+                                        if (targetCtx != null) {
+                                            ScreenCaptureCommand command = new ScreenCaptureCommand(request.requesterUserId);
+                                            targetCtx.writeAndFlush(gson.toJson(command) + "\n");
+                                            System.out.println("[서버] 화면 캡처 명령 전송 - target userId: " + request.targetUserId);
+                                        } else {
+                                            ScreenCaptureResult failResult = new ScreenCaptureResult(
+                                                    request.requesterUserId, request.targetUserId,
+                                                    false, "고객이 접속중이 아닙니다.", null, System.currentTimeMillis());
+                                            SessionManager.sendToAdmin(request.requesterUserId, failResult);
+                                            System.out.println("[서버] 캡처 요청 실패 - target userId " + request.targetUserId + " 미접속");
+                                        }
+
+                                    } else if ("SCREEN_CAPTURE_RESULT".equals(type)) {
+                                        ScreenCaptureResult result = gson.fromJson(msg, ScreenCaptureResult.class);
+                                        SessionManager.sendToAdmin(result.requesterUserId, result);
+                                        System.out.println("[서버] 캡처 결과 전달 완료 - admin userId: " + result.requesterUserId);
+                                    }
+
+
+                                    else if ("ORDER_REQUEST".equals(type)) {
                                         OrderRequest request = gson.fromJson(msg, OrderRequest.class);
                                         System.out.println("[서버] 주문 요청 - userId: " + request.getUserId()
                                                 + ", symbol: " + request.getSymbol()
@@ -1529,6 +1566,58 @@ public class DemoServer {
                                         PositionByIdRequest request = gson.fromJson(msg, PositionByIdRequest.class);
                                         Position pos = positionService.getPositionById(request.getId());
                                         ctx.writeAndFlush(gson.toJson(new PositionByIdResponse(request.getRequestId(), pos)) + "\n");
+                                    }  else if ("ADMIN_ALL_POSITIONS_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            server.AdminAllPositionsResponse response = adminPositionAggregateService.computeAll();
+                                            SessionManager.broadcastToAdmins(response);
+                                        }).start();
+                                    }
+                                    else if ("ADMIN_LIQUIDATE_POSITION_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            server.AdminLiquidatePositionRequest request =
+                                                    gson.fromJson(msg, server.AdminLiquidatePositionRequest.class);
+
+                                            boolean ok = liquidatePosition(request.getUserId(), request.getSymbol());
+
+                                            server.AdminActionResult result = new server.AdminActionResult(
+                                                    ok, ok ? "청산 완료" : "청산 실패 (해당 포지션이 없습니다)"
+                                            );
+                                            ctx.writeAndFlush(gson.toJson(result) + "\n");
+
+                                            SessionManager.broadcastToAdmins(adminPositionAggregateService.computeAll());
+                                        }).start();
+                                    }
+                                    else if ("ADMIN_LIQUIDATE_ALL_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            int count = 0;
+                                            for (model.AdminPositionRow row : adminPositionAggregateService.computeAll().getPositions()) {
+                                                if (liquidatePosition(row.getUserId(), row.getSymbol())) count++;
+                                            }
+
+                                            server.AdminActionResult result =
+                                                    new server.AdminActionResult(true, count + "건 전체청산 완료");
+                                            ctx.writeAndFlush(gson.toJson(result) + "\n");
+
+                                            SessionManager.broadcastToAdmins(adminPositionAggregateService.computeAll());
+                                        }).start();
+                                    }
+                                    else if ("ADMIN_CANCEL_ALL_ORDERS_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            List<model.AdminUserListRow> customers = adminUserListService.loadCustomers("");
+                                            for (model.AdminUserListRow c : customers) {
+                                                orderDAO.cancelAll(c.getId());
+                                                SessionManager.sendEventToCustomer(
+                                                        c.getId(),
+                                                        new ClientEventMessage("PENDING_ORDER_CHANGED", null, "ORDER_CANCELLED")
+                                                );
+                                            }
+
+                                            server.AdminActionResult result =
+                                                    new server.AdminActionResult(true, "전체 미체결 취소 완료");
+                                            ctx.writeAndFlush(gson.toJson(result) + "\n");
+
+                                            SessionManager.broadcastToAdmins(adminPositionAggregateService.computeAll());
+                                        }).start();
                                     }
 
 
@@ -1591,6 +1680,29 @@ public class DemoServer {
         }
     }
 
+
+    // 🔥 관리자 개별/전체청산에서 공용으로 쓰는 청산 헬퍼
+    // ⚠️ pos.getSide()가 String을 반환하는지 model.OrderSide를 반환하는지 몰라서
+    //    양쪽 다 되게 .toString() 거쳐서 다시 valueOf 하는 방식으로 짰습니다.
+    //    이미 model.OrderSide를 반환한다면 이 두 줄은 그냥 pos.getSide() 하나로 줄이셔도 됩니다.
+    private static boolean liquidatePosition(int userId, String symbol) {
+        Position pos = positionService.getPosition(userId, symbol);
+        if (pos == null || pos.getQty() == 0) return false;
+
+        model.OrderSide currentSide = pos.isLong() ? model.OrderSide.BUY : model.OrderSide.SELL;
+        model.OrderSide closingSide = (currentSide == model.OrderSide.BUY)
+                ? model.OrderSide.SELL
+                : model.OrderSide.BUY;
+
+        double currentPrice = Store.PriceStore.getLast(symbol);
+
+        int orderId = orderExecutionService.executeMarket(
+                userId, symbol, closingSide, (int) pos.getQty(), currentPrice,
+                false, 0, false, 0
+        );
+
+        return orderId > 0;
+    }
 
 //입출금승인헬퍼메소드//
     private static DepositMonitoringResponse buildDepositMonitoringResponse() {

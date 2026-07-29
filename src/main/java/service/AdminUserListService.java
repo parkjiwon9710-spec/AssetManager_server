@@ -59,6 +59,7 @@ public class AdminUserListService {
             while (rs.next()) {
                 AdminUserListRow row = new AdminUserListRow();
                 int userId = rs.getInt("id");   // 🔥 이 줄이 있는지 확인
+                row.setId(userId);
                 row.setCreatedAt(rs.getTimestamp("created_at"));
                 row.setUsername(rs.getString("username"));
                 row.setName(rs.getString("name"));

@@ -107,7 +107,7 @@ public class SessionManager {
     }
     /// //////////////////////////////////////////
 
-
+/// //////////////////////////////
     public static void sendSessionListTo(ChannelHandlerContext ctx) {
         List<SessionInfo> list = customerSessionInfo.values().stream().collect(Collectors.toList());
         SessionListMessage message = new SessionListMessage(list);
@@ -120,7 +120,21 @@ public class SessionManager {
             ctx.writeAndFlush(new Gson().toJson(event) + "\n");
         }
     }
+/// //////////////////////////////////
 
+
+    /// ///////////////특정관리자1명에게 개별전송   캡쳐때 쓰일듯
+    public static ChannelHandlerContext getAdmin(int userId) {
+        return adminConnections.get(userId);
+    }
+
+    public static void sendToAdmin(int userId, Object message) {
+        ChannelHandlerContext ctx = adminConnections.get(userId);
+        if (ctx != null) {
+            ctx.writeAndFlush(gson.toJson(message) + "\n");
+        }
+    }
+    /// ////////////////
 
 
 
