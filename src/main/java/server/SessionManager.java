@@ -169,6 +169,7 @@ public class SessionManager {
 //            System.out.println("[서버] " + symbol + " 구독자 없음, 스킵");
             return;
         }
+        System.out.println("[서버] " + symbol + " 구독자 " + counts.size() + "명에게 전송");
         String json = new Gson().toJson(message);
         for (Integer userId : counts.keySet()) {
             ChannelHandlerContext ctx = customerConnections.get(userId);

@@ -867,58 +867,124 @@ public class OrderDAO {
         return list;
     }
 
-    public List<PartnerProfitRow> loadPartnerChildrenProfitSummary(String partnerUsername, Timestamp start, Timestamp end) {
+//    public List<PartnerProfitRow> loadPartnerChildrenProfitSummary(String partnerUsername, Timestamp start, Timestamp end) {
+//
+//        List<PartnerProfitRow> list = new ArrayList<>();
+//
+//        String sql =
+//                "SELECT u.id, u.username, u.name, COALESCE(up.memo_customer,'') AS memo, " +
+//                        "COALESCE(dr.deposit,0) deposit, COALESCE(dr.admin_deposit,0) admin_deposit, " +
+//                        "COALESCE(dr.withdraw,0) withdraw, COALESCE(dr.admin_withdraw,0) admin_withdraw, " +
+//                        "COALESCE(th.fee,0) fee, COALESCE(th.pnl,0) pnl, COALESCE(th.pnl - th.fee,0) final_profit " +
+//                        "FROM users u " +
+//                        "LEFT JOIN user_profiles up ON up.user_id = u.id " +
+//                        "LEFT JOIN (SELECT user_id, " +
+//                        "SUM(CASE WHEN type='DEPOSIT' AND request_source='USER' THEN amount ELSE 0 END) deposit, " +
+//                        "SUM(CASE WHEN type='DEPOSIT' AND request_source='ADMIN' THEN amount ELSE 0 END) admin_deposit, " +
+//                        "SUM(CASE WHEN type='WITHDRAW' AND request_source='USER' THEN amount ELSE 0 END) withdraw, " +
+//                        "SUM(CASE WHEN type='WITHDRAW' AND request_source='ADMIN' THEN amount ELSE 0 END) admin_withdraw " +
+//                        "FROM deposit_requests WHERE partner_username = ? GROUP BY user_id) dr ON dr.user_id = u.id " +
+//                        "LEFT JOIN (SELECT user_id, SUM(fee) fee, SUM(realized_pnl) pnl " +
+//                        "FROM trade_history WHERE partner_username = ? GROUP BY user_id) th ON th.user_id = u.id " +
+//                        "WHERE u.account_type = 'REAL' AND u.id IN (" +
+//                        "SELECT user_id FROM deposit_requests WHERE partner_username = ? " +
+//                        "UNION SELECT user_id FROM trade_history WHERE partner_username = ?)";
+//
+//        try (Connection conn = DBUtil.getConnection();
+//             PreparedStatement ps = conn.prepareStatement(sql)) {
+//
+//            ps.setString(1, partnerUsername);
+//            ps.setString(2, partnerUsername);
+//            ps.setString(3, partnerUsername);
+//            ps.setString(4, partnerUsername);
+//
+//            ResultSet rs = ps.executeQuery();
+//
+//            while (rs.next()) {
+//                double fee = rs.getDouble("fee");
+//                double pnl = rs.getDouble("pnl");
+//
+//                list.add(new PartnerProfitRow(
+//                        rs.getString("username"), rs.getString("name"), rs.getString("memo"),
+//                        rs.getDouble("deposit"), rs.getDouble("admin_deposit"),
+//                        rs.getDouble("withdraw"), rs.getDouble("admin_withdraw"),
+//                        -fee, pnl, pnl - fee
+//                ));
+//            }
+//
+//        } catch (Exception e) {
+//            e.printStackTrace();
+//        }
+//
+//        return list;
+//    }
+public List<PartnerProfitRow> loadPartnerChildrenProfitSummary(String partnerUsername, Timestamp start, Timestamp end) {
 
-        List<PartnerProfitRow> list = new ArrayList<>();
+    List<PartnerProfitRow> list = new ArrayList<>();
 
-        String sql =
-                "SELECT u.id, u.username, u.name, COALESCE(up.memo_customer,'') AS memo, " +
-                        "COALESCE(dr.deposit,0) deposit, COALESCE(dr.admin_deposit,0) admin_deposit, " +
-                        "COALESCE(dr.withdraw,0) withdraw, COALESCE(dr.admin_withdraw,0) admin_withdraw, " +
-                        "COALESCE(th.fee,0) fee, COALESCE(th.pnl,0) pnl, COALESCE(th.pnl - th.fee,0) final_profit " +
-                        "FROM users u " +
-                        "LEFT JOIN user_profiles up ON up.user_id = u.id " +
-                        "LEFT JOIN (SELECT user_id, " +
-                        "SUM(CASE WHEN type='DEPOSIT' AND request_source='USER' THEN amount ELSE 0 END) deposit, " +
-                        "SUM(CASE WHEN type='DEPOSIT' AND request_source='ADMIN' THEN amount ELSE 0 END) admin_deposit, " +
-                        "SUM(CASE WHEN type='WITHDRAW' AND request_source='USER' THEN amount ELSE 0 END) withdraw, " +
-                        "SUM(CASE WHEN type='WITHDRAW' AND request_source='ADMIN' THEN amount ELSE 0 END) admin_withdraw " +
-                        "FROM deposit_requests WHERE partner_username = ? GROUP BY user_id) dr ON dr.user_id = u.id " +
-                        "LEFT JOIN (SELECT user_id, SUM(fee) fee, SUM(realized_pnl) pnl " +
-                        "FROM trade_history WHERE partner_username = ? GROUP BY user_id) th ON th.user_id = u.id " +
-                        "WHERE u.account_type = 'REAL' AND u.id IN (" +
-                        "SELECT user_id FROM deposit_requests WHERE partner_username = ? " +
-                        "UNION SELECT user_id FROM trade_history WHERE partner_username = ?)";
+    String sql =
+            "SELECT u.id, u.username, u.name, COALESCE(up.memo_customer,'') AS memo, " +
+                    "COALESCE(dr.deposit,0) deposit, COALESCE(dr.admin_deposit,0) admin_deposit, " +
+                    "COALESCE(dr.withdraw,0) withdraw, COALESCE(dr.admin_withdraw,0) admin_withdraw, " +
+                    "COALESCE(th.fee,0) fee, COALESCE(th.pnl,0) pnl, COALESCE(th.pnl - th.fee,0) final_profit " +
+                    "FROM users u " +
+                    "LEFT JOIN user_profiles up ON up.user_id = u.id " +
+                    "LEFT JOIN (SELECT user_id, " +
+                    "SUM(CASE WHEN type='DEPOSIT' AND status='APPROVED' AND request_source='USER' THEN amount ELSE 0 END) deposit, " +
+                    "SUM(CASE WHEN type='DEPOSIT' AND status='APPROVED' AND request_source='ADMIN' THEN amount ELSE 0 END) admin_deposit, " +
+                    "SUM(CASE WHEN type='WITHDRAW' AND status='APPROVED' AND request_source='USER' THEN amount ELSE 0 END) withdraw, " +
+                    "SUM(CASE WHEN type='WITHDRAW' AND status='APPROVED' AND request_source='ADMIN' THEN amount ELSE 0 END) admin_withdraw " +
+                    "FROM deposit_requests WHERE partner_username = ? AND processed_at >= ? AND processed_at <= ? " +
+                    "GROUP BY user_id) dr ON dr.user_id = u.id " +
+                    "LEFT JOIN (SELECT user_id, SUM(fee) fee, SUM(realized_pnl) pnl " +
+                    "FROM trade_history WHERE partner_username = ? AND created_at >= ? AND created_at <= ? " +
+                    "GROUP BY user_id) th ON th.user_id = u.id " +
+                    "WHERE u.account_type = 'REAL' AND u.id IN (" +
+                    "SELECT user_id FROM deposit_requests WHERE partner_username = ? AND processed_at >= ? AND processed_at <= ? " +
+                    "UNION " +
+                    "SELECT user_id FROM trade_history WHERE partner_username = ? AND created_at >= ? AND created_at <= ?)";
 
-        try (Connection conn = DBUtil.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+    try (Connection conn = DBUtil.getConnection();
+         PreparedStatement ps = conn.prepareStatement(sql)) {
 
-            ps.setString(1, partnerUsername);
-            ps.setString(2, partnerUsername);
-            ps.setString(3, partnerUsername);
-            ps.setString(4, partnerUsername);
+        int idx = 1;
+        // dr 서브쿼리
+        ps.setString(idx++, partnerUsername);
+        ps.setTimestamp(idx++, start);
+        ps.setTimestamp(idx++, end);
+        // th 서브쿼리
+        ps.setString(idx++, partnerUsername);
+        ps.setTimestamp(idx++, start);
+        ps.setTimestamp(idx++, end);
+        // WHERE ... IN (UNION) - deposit_requests
+        ps.setString(idx++, partnerUsername);
+        ps.setTimestamp(idx++, start);
+        ps.setTimestamp(idx++, end);
+        // WHERE ... IN (UNION) - trade_history
+        ps.setString(idx++, partnerUsername);
+        ps.setTimestamp(idx++, start);
+        ps.setTimestamp(idx++, end);
 
-            ResultSet rs = ps.executeQuery();
+        ResultSet rs = ps.executeQuery();
 
-            while (rs.next()) {
-                double fee = rs.getDouble("fee");
-                double pnl = rs.getDouble("pnl");
+        while (rs.next()) {
+            double fee = rs.getDouble("fee");
+            double pnl = rs.getDouble("pnl");
 
-                list.add(new PartnerProfitRow(
-                        rs.getString("username"), rs.getString("name"), rs.getString("memo"),
-                        rs.getDouble("deposit"), rs.getDouble("admin_deposit"),
-                        rs.getDouble("withdraw"), rs.getDouble("admin_withdraw"),
-                        -fee, pnl, pnl - fee
-                ));
-            }
-
-        } catch (Exception e) {
-            e.printStackTrace();
+            list.add(new PartnerProfitRow(
+                    rs.getString("username"), rs.getString("name"), rs.getString("memo"),
+                    rs.getDouble("deposit"), rs.getDouble("admin_deposit"),
+                    rs.getDouble("withdraw"), rs.getDouble("admin_withdraw"),
+                    -fee, pnl, pnl - fee
+            ));
         }
 
-        return list;
+    } catch (Exception e) {
+        e.printStackTrace();
     }
 
+    return list;
+}
 
 
 

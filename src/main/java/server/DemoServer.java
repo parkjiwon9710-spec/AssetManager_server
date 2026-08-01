@@ -130,6 +130,31 @@ public class DemoServer {
 
         }, 0, 300, java.util.concurrent.TimeUnit.MILLISECONDS);
 
+        // 🔥 체결(Trade) 시뮬레이터 - 시장에 공개된 체결 tape을 흉내냄
+// 유저 주문과 완전히 무관, 나중에 실제 증권사 API 수신으로 교체될 부분
+        java.util.concurrent.Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
+
+            for (String symbol : marketSimulators.keySet()) {
+
+                double lastPrice = Store.PriceStore.getLast(symbol);
+                if (lastPrice <= 0) continue;
+
+                int qty = 1 + (int) (Math.random() * 10);
+
+                TradeUpdateMessage tradeUpdate = new TradeUpdateMessage(
+                        symbol,
+                        lastPrice,
+                        qty,
+                        java.time.LocalTime.now().withNano(0).toString()   // 🔥 문자열로 변환
+                );
+//                System.out.println("[서버] TRADE_UPDATE 생성: " + symbol + " price=" + lastPrice);  // 🔥 추가
+
+                SessionManager.broadcastToSubscribers(symbol, tradeUpdate);
+            }
+
+        }, 0, 1000, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+
 
 
 /// ////////////////////////실시간종합현황 스케줄러
@@ -316,6 +341,18 @@ public class DemoServer {
                                                 + ", qty: " + request.getQty());
 
 
+
+
+
+/// //////////////////////////장운영시간 체크 ////////////////
+                                        Market.MarketPhase phase = Market.MarketSpecCache.getPhase(request.getSymbol());
+                                        if (phase == Market.MarketPhase.CLOSED) {
+                                            OrderResponse rejectResponse = new OrderResponse(false, "장 운영시간이 아닙니다.", -1);
+                                            ctx.writeAndFlush(gson.toJson(rejectResponse) + "\n");
+                                            System.out.println("[서버] 장마감으로 주문 거부 - userId: " + request.getUserId() + ", symbol: " + request.getSymbol());
+                                            return;
+                                        }
+
 /// //////////////////////////////////////////////////리스크 체크 추가///////////////////
                                         model.OrderSide side = model.OrderSide.valueOf(request.getSide());
 
@@ -347,6 +384,16 @@ public class DemoServer {
                                     } else if ("ORDER_PENDING_REQUEST".equals(type)) {
                                         OrderPendingRequest request = gson.fromJson(msg, OrderPendingRequest.class);
 
+
+                                        /// ////////장운영시간체크///////
+                                        Market.MarketPhase phase = Market.MarketSpecCache.getPhase(request.getSymbol());
+                                        if (phase == Market.MarketPhase.CLOSED) {
+                                            OrderResponse rejectResponse = new OrderResponse(false, "장 운영시간이 아닙니다.", -1);
+                                            ctx.writeAndFlush(gson.toJson(rejectResponse) + "\n");
+                                            System.out.println("[서버] 장마감으로 예약주문 거부 - userId: " + request.getUserId() + ", symbol: " + request.getSymbol());
+                                            return;
+                                        }
+                                        /// ////////장운영시간체크///////
                                         model.OrderSide side = model.OrderSide.valueOf(request.getSide());
 
                                         boolean allowed = riskService.canPlaceOrder(
@@ -602,7 +649,15 @@ public class DemoServer {
                                                 request.getPartnerUsername(), start, end
                                         );
 
-                                        PartnerChildrenProfitResponse response = new PartnerChildrenProfitResponse(rows);
+                                        double td=0, tad=0, tw=0, taw=0, tf=0, tp=0, tfp=0;
+                                        for (model.PartnerProfitRow r : rows) {
+                                            td += r.getDeposit(); tad += r.getAdminDeposit();
+                                            tw += r.getWithdraw(); taw += r.getAdminWithdraw();
+                                            tf += r.getFee(); tp += r.getPnl(); tfp += r.getFinalProfit();
+                                        }
+                                        model.PartnerProfitRow total = new model.PartnerProfitRow("TOTAL", "", "", td, tad, tw, taw, tf, tp, tfp);
+
+                                        PartnerChildrenProfitResponse response = new PartnerChildrenProfitResponse(total, rows);
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
                                     } else if ("REALTIME_PNL_REQUEST".equals(type)) {
                                         // 🔥 netty 워커 스레드를 막지 않도록 별도 스레드에서 처리
