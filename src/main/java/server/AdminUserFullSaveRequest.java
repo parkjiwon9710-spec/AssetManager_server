@@ -42,8 +42,7 @@ public class AdminUserFullSaveRequest {
 
     // 계약수
     public int maxFuturesQty;
-    public int maxOptionsBuyQty;
-    public int maxOptionsSellQty;
+    public int maxOptionsQty;
     public int maxOverseasQty;
     public List<OverseasQtyRow> overseasQtyRows;
 }

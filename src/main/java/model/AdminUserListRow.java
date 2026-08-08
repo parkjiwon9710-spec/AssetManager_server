@@ -96,13 +96,10 @@ public class AdminUserListRow {
         this.maxOptionsSellQty = maxOptionsSellQty;
     }
 
-    public int getMaxOptionsBuyQty() {
-        return maxOptionsBuyQty;
-    }
+    private int maxOptionsQty;
 
-    public void setMaxOptionsBuyQty(int maxOptionsBuyQty) {
-        this.maxOptionsBuyQty = maxOptionsBuyQty;
-    }
+    public int getMaxOptionsQty() { return maxOptionsQty; }
+    public void setMaxOptionsQty(int maxOptionsQty) { this.maxOptionsQty = maxOptionsQty; }
 
     public int getMaxFuturesQty() {
         return maxFuturesQty;

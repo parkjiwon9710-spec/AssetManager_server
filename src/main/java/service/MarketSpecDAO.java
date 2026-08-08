@@ -8,10 +8,7 @@ import javax.swing.*;
 import javax.swing.table.DefaultTableModel;
 import java.sql.*;
 import java.time.LocalTime;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class MarketSpecDAO {
 
@@ -373,33 +370,11 @@ WHERE symbol=?
 
 
     public model.OptionMarketData loadOptionDataModel() {
-
-        String sql = """
-        SELECT trade_start, trade_end, is_active, expiry_date
-        FROM market_specs
-        WHERE market_type='OPTIONS' AND underlying_symbol='KOSPI200'
-        LIMIT 1
-    """;
-
-        try (Connection conn = DBUtil.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-
-            ResultSet rs = ps.executeQuery();
-
-            if (rs.next()) {
-                return new model.OptionMarketData(
-                        nvl(rs.getString("trade_start")),
-                        nvl(rs.getString("trade_end")),
-                        !rs.getBoolean("is_active"),   // 🔥 is_active=false면 휴일이므로 반전
-                        nvl(rs.getString("expiry_date"))
-                );
-            }
-
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-
-        return new model.OptionMarketData("", "", false, "");
+        String[] data = loadOptionData();
+        return new model.OptionMarketData(
+                trim(data[0]), trim(data[1]),
+                data[2].equals("true"), data[3]
+        );
     }
 
 
@@ -464,6 +439,81 @@ WHERE symbol=?
     }
 
 
+
+    // =========================
+// 고객용 스케줄 패널 - 그룹핑된 운영시간 조회
+// =========================
+    public List<model.MarketScheduleRow> loadScheduleRows() {
+
+        List<model.MarketScheduleRow> result = new ArrayList<>();
+
+        String[] d = loadDomesticData();
+        result.add(new model.MarketScheduleRow(
+                "국내선물", d[3].equals("true"),
+                trim(d[1]), trim(d[2]), null, null, null, null
+        ));
+
+        String[] o = loadOptionData();
+        result.add(new model.MarketScheduleRow(
+                "옵션", o[2].equals("true"),
+                trim(o[0]), trim(o[1]), null, null, null, null
+        ));
+
+        String[] h = loadHsiData();
+        result.add(new model.MarketScheduleRow(
+                "항셍지수", h[6].equals("true"),
+                trim(h[0]), trim(h[1]), trim(h[2]), trim(h[3]), trim(h[4]), trim(h[5])
+        ));
+
+        // 해외선물(항셍 제외) - (trade_start, trade_end, is_active) 조합으로 그룹핑
+        String sql = """
+        SELECT display_name, trade_start, trade_end, is_active
+        FROM market_specs
+        WHERE market_type = 'OVERSEAS_FUTURES' AND symbol != 'HSI'
+        ORDER BY sort_order
+    """;
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+
+            // key = start|end|isActive -> [대표종목명, 개수, start, end, isActive]
+            Map<String, Object[]> groups = new LinkedHashMap<>();
+
+            while (rs.next()) {
+                String start = rs.getString("trade_start");
+                String end = rs.getString("trade_end");
+                boolean active = rs.getBoolean("is_active");
+                String key = start + "|" + end + "|" + active;
+
+                Object[] g = groups.get(key);
+                if (g == null) {
+                    groups.put(key, new Object[]{ rs.getString("display_name"), 1, start, end, active });
+                } else {
+                    g[1] = (int) g[1] + 1;
+                }
+            }
+
+            for (Object[] g : groups.values()) {
+                String repName = (String) g[0];
+                int count = (int) g[1];
+                String start = (String) g[2];
+                String end = (String) g[3];
+                boolean active = (boolean) g[4];
+
+                String label = count == 1 ? repName : repName + " 외 " + (count - 1) + "개";
+
+                result.add(new model.MarketScheduleRow(
+                        label, !active, trim(start), trim(end), null, null, null, null
+                ));
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return result;
+    }
 
 
 

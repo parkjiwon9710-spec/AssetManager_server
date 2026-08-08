@@ -33,7 +33,8 @@ public class PositionService {
         // ===== 신규 포지션 =====
         if (p == null) {
 
-            double entryFee = feeService.getFeeKRW(userId, symbol, price, qty);
+            double entryFeeRaw = feeService.getFeeKRW(userId, symbol, price, qty);
+            long entryFee = Math.round(entryFeeRaw);
             String partnerUsername = userDAO.getPartnerUsername(userId);
 
             tradeHistoryDAO.insert(orderId, userId, partnerUsername, symbol, side.name(), price, qty, 0, entryFee);
@@ -69,7 +70,9 @@ public class PositionService {
         // ===== 같은 방향 =====
         if (sameDirection) {
 
-            double entryFee = feeService.getFeeKRW(userId, symbol, price, qty);
+            double entryFeeRaw = feeService.getFeeKRW(userId, symbol, price, qty);
+            long entryFee = Math.round(entryFeeRaw);
+
             String partnerUsername = userDAO.getPartnerUsername(userId);
 
             tradeHistoryDAO.insert(orderId,userId, partnerUsername, symbol, side.name(), price, qty, 0, entryFee);
@@ -99,8 +102,6 @@ public class PositionService {
         // ===== 반대 방향 → 청산 =====
         int closeQty = Math.min(p.getQty(), qty);
 
-
-
         double priceDiff =
                 p.getDirection().equals("LONG")
                         ? price - p.getAvgPrice()
@@ -108,17 +109,21 @@ public class PositionService {
 
         double ticks = Math.round(priceDiff / spec.getTickSize());
         double rate = Store.ExchangeRateCache.getRate(spec.getCurrency());
-        double tradingProfit = ticks * spec.getTickValue() * rate * closeQty;
 
-        double fee = feeService.getFeeKRW(userId, symbol, price, closeQty);
-        double finalProfit = tradingProfit - fee;
+// 🔥 원 단위로 반올림 (환율 곱셈 과정에서 생기는 소수점 부산물 제거)
+        long tradingProfit = Math.round(ticks * spec.getTickValue() * rate * closeQty);
+
+        double feeRaw = feeService.getFeeKRW(userId, symbol, price, closeQty);
+        long fee = Math.round(feeRaw);   // 🔥 수수료도 반올림
+
+        long finalProfit = tradingProfit - fee;
         boolean isWin = tradingProfit > 0;
 
         userService.applyBalanceChange(userId, finalProfit);
 
         String partnerUsername = userDAO.getPartnerUsername(userId);
 
-        tradeHistoryDAO.insert(orderId,userId, partnerUsername, symbol, side.name(), price, closeQty, tradingProfit, fee);
+        tradeHistoryDAO.insert(orderId, userId, partnerUsername, symbol, side.name(), price, closeQty, tradingProfit, fee);
         userStatusDAO.updateTradeStats(userId, finalProfit, fee, Timestamp.valueOf(LocalDateTime.now()));
 
         if (tradingProfit != 0) {
@@ -149,7 +154,8 @@ public class PositionService {
         int openQty = qty - closeQty;
         if (openQty > 0) {
 
-            double entryFee = feeService.getFeeKRW(userId, symbol, price, openQty);
+            double entryFeeRaw = feeService.getFeeKRW(userId, symbol, price, openQty);
+            long entryFee = Math.round(entryFeeRaw);
 
             tradeHistoryDAO.insert(orderId,userId, partnerUsername, symbol, side.name(), price, openQty, 0, entryFee);
             userStatusDAO.updateTradeStats(userId, -entryFee, entryFee, Timestamp.valueOf(LocalDateTime.now()));

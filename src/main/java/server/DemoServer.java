@@ -1252,8 +1252,7 @@ public class DemoServer {
                                     } else if ("SYSTEM_QTY_LIMIT_SAVE_REQUEST".equals(type)) {
                                         SystemQtyLimitSaveRequest request = gson.fromJson(msg, SystemQtyLimitSaveRequest.class);
                                         systemQtyLimitDAO.updateSettings(
-                                                request.getFuturesQty(), request.getOptionBuyQty(),
-                                                request.getOptionSellQty(), request.getOverseasQty()
+                                                request.getFuturesQty(), request.getOptionQty(), request.getOverseasQty()
                                         );
                                         SystemQtyLimitSaveResponse response = new SystemQtyLimitSaveResponse(true);
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
@@ -1700,6 +1699,16 @@ public class DemoServer {
                                         OvernightPreviewResponse response = new OvernightPreviewResponse(info);
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
                                     }
+
+
+
+
+                                    else if ("MARKET_SCHEDULE_REQUEST".equals(type)) {
+                                        List<model.MarketScheduleRow> rows = marketSpecDAO.loadScheduleRows();
+                                        MarketScheduleResponse response = new MarketScheduleResponse(true, rows);
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                    }
+
 
 
 

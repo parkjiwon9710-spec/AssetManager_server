@@ -11,6 +11,7 @@ import model.User;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.util.List;
 import java.util.Set;
 
 //로스컷 로직 제외한 트리밍 버전
@@ -51,39 +52,24 @@ public class RiskService {
 
         // 🔥 옵션은 매수/매도 컬럼을 구분해서 읽기
         if ("OPTIONS".equals(spec.getMarketType())) {
-            return side == OrderSide.BUY
-                    ? getDefaultOptionBuyQty(userId)
-                    : getDefaultOptionSellQty(userId);
+            return getDefaultOptionQty(userId);
         }
 
         return 0;
     }
 /// ////////옵션/////////
-    private int getDefaultOptionBuyQty(int userId) {
-        String sql = "SELECT max_options_buy_qty FROM user_qty_limits WHERE user_id=?";
-        try (Connection conn = DBUtil.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setInt(1, userId);
-            ResultSet rs = ps.executeQuery();
-            if (rs.next()) return rs.getInt("max_options_buy_qty");
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return 0;
+private int getDefaultOptionQty(int userId) {
+    String sql = "SELECT max_options_qty FROM user_qty_limits WHERE user_id=?";
+    try (Connection conn = DBUtil.getConnection();
+         PreparedStatement ps = conn.prepareStatement(sql)) {
+        ps.setInt(1, userId);
+        ResultSet rs = ps.executeQuery();
+        if (rs.next()) return rs.getInt("max_options_qty");
+    } catch (Exception e) {
+        e.printStackTrace();
     }
-
-    private int getDefaultOptionSellQty(int userId) {
-        String sql = "SELECT max_options_sell_qty FROM user_qty_limits WHERE user_id=?";
-        try (Connection conn = DBUtil.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setInt(1, userId);
-            ResultSet rs = ps.executeQuery();
-            if (rs.next()) return rs.getInt("max_options_sell_qty");
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return 0;
-    }
+    return 0;
+}
     /// ////////국선/////////
     private int getDefaultFutureQty(int userId) {
 
@@ -151,16 +137,16 @@ public class RiskService {
         return Math.max(qty - pendingSellQty, 0);
     }
 
-    public int calcMaxOrderQty(int userId, String symbol, OrderSide side) {   // 🔥 파라미터 추가
+    public int calcMaxOrderQty(int userId, String symbol, OrderSide side) {
 
         User user = userService.getUserById(userId);
         if (user == null) return 0;
 
         long balance = (long) user.getBalance();
 
-        long usedMargin = positionService
-                .getAllPositions(userId)
-                .stream()
+        List<Position> allPositions = positionService.getAllPositions(userId);
+
+        long usedMargin = allPositions.stream()
                 .mapToLong(p -> Math.abs(p.getQty()) * getEntryMargin(p.getSymbol()))
                 .sum();
 
@@ -168,18 +154,32 @@ public class RiskService {
         if (availableMargin <= 0) return 0;
 
         long entryMargin = getEntryMargin(symbol);
-
         if (entryMargin <= 0) {
             System.out.println("entryMargin 설정 오류 : " + symbol);
             return 0;
         }
 
         int maxByMargin = (int) (availableMargin / entryMargin);
-        int maxByDB = getMaxQtyFromDB(userId, symbol, side);   // 🔥 side 추가
+        int maxByDB = getMaxQtyFromDB(userId, symbol, side);
 
-        Position pos = positionService.getPosition(userId, symbol);
-        if (pos != null) {
-            maxByDB -= Math.abs(pos.getQty());
+        MarketSpec spec = MarketSpecCache.get(symbol);
+
+        if ("OVERSEAS_FUTURES".equals(spec.getMarketType())) {
+            // 🔥 해외선물은 종목별이 아니라 전체 해외선물 포지션 합으로 차감(공유 풀)
+            int totalOverseasQty = allPositions.stream()
+                    .filter(p -> {
+                        MarketSpec s = MarketSpecCache.get(p.getSymbol());
+                        return s != null && "OVERSEAS_FUTURES".equals(s.getMarketType());
+                    })
+                    .mapToInt(p -> Math.abs(p.getQty()))
+                    .sum();
+            maxByDB -= totalOverseasQty;
+        } else {
+            // 국내선물/옵션은 기존처럼 종목(또는 side) 단독 차감
+            Position pos = positionService.getPosition(userId, symbol);
+            if (pos != null) {
+                maxByDB -= Math.abs(pos.getQty());
+            }
         }
 
         return Math.max(Math.min(maxByMargin, maxByDB), 0);

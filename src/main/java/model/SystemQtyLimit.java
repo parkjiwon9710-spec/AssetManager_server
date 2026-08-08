@@ -3,8 +3,7 @@ package model;
 public class SystemQtyLimit {
 
     private int maxFuturesQty;
-    private int maxOptionsBuyQty;
-    private int maxOptionsSellQty;
+    private int maxOptionsQty;
     private int maxOverseasQty;
 
     public int getMaxFuturesQty() {
@@ -15,20 +14,12 @@ public class SystemQtyLimit {
         this.maxFuturesQty = maxFuturesQty;
     }
 
-    public int getMaxOptionsBuyQty() {
-        return maxOptionsBuyQty;
+    public int getMaxOptionsQty() {
+        return maxOptionsQty;
     }
 
-    public void setMaxOptionsBuyQty(int maxOptionsBuyQty) {
-        this.maxOptionsBuyQty = maxOptionsBuyQty;
-    }
-
-    public int getMaxOptionsSellQty() {
-        return maxOptionsSellQty;
-    }
-
-    public void setMaxOptionsSellQty(int maxOptionsSellQty) {
-        this.maxOptionsSellQty = maxOptionsSellQty;
+    public void setMaxOptionsQty(int maxOptionsQty) {
+        this.maxOptionsQty = maxOptionsQty;
     }
 
     public int getMaxOverseasQty() {

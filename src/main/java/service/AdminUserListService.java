@@ -30,7 +30,7 @@ public class AdminUserListService {
                 up.bank, up.account_number, up.account_holder, up.deposit_account,
                 us.last_trade_time,
                 ufs.futures_fee, ufs.options_fee, ufs.night_futures_fee, ufs.night_options_fee,
-                uql.max_futures_qty, uql.max_options_buy_qty, uql.max_options_sell_qty, uql.max_overseas_qty,
+              uql.max_futures_qty, uql.max_options_qty, uql.max_overseas_qty,
                 up.memo_customer, up.memo_partner,
                 us.last_login, us.login_fail_count,
                 up.join_ip, up.join_mac,
@@ -89,8 +89,7 @@ public class AdminUserListService {
                 row.setNightFuturesFee(rs.getDouble("night_futures_fee"));
                 row.setNightOptionsFee(rs.getDouble("night_options_fee"));
                 row.setMaxFuturesQty(rs.getInt("max_futures_qty"));
-                row.setMaxOptionsBuyQty(rs.getInt("max_options_buy_qty"));
-                row.setMaxOptionsSellQty(rs.getInt("max_options_sell_qty"));
+                row.setMaxOptionsQty(rs.getInt("max_options_qty"));
                 row.setMaxOverseasQty(rs.getInt("max_overseas_qty"));
                 row.setOverseasLimitSummary(              // ← 이게 있어야 함
                         buildOverseasLimitSummary(conn, userId, rs.getInt("max_overseas_qty"))

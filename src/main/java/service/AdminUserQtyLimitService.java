@@ -18,10 +18,10 @@ public class AdminUserQtyLimitService {
     public AdminUserQtyLimitData loadQtyLimits(String username) {
 
         String sql = """
-            SELECT max_futures_qty, max_options_buy_qty, max_options_sell_qty, max_overseas_qty
-            FROM user_qty_limits
-            WHERE user_id = (SELECT id FROM users WHERE username = ?)
-        """;
+        SELECT max_futures_qty, max_options_qty, max_overseas_qty
+        FROM user_qty_limits
+        WHERE user_id = (SELECT id FROM users WHERE username = ?)
+    """;
 
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -32,8 +32,7 @@ public class AdminUserQtyLimitService {
             if (rs.next()) {
                 AdminUserQtyLimitData data = new AdminUserQtyLimitData();
                 data.setMaxFuturesQty(rs.getInt("max_futures_qty"));
-                data.setMaxOptionsBuyQty(rs.getInt("max_options_buy_qty"));
-                data.setMaxOptionsSellQty(rs.getInt("max_options_sell_qty"));
+                data.setMaxOptionsQty(rs.getInt("max_options_qty"));
                 data.setMaxOverseasQty(rs.getInt("max_overseas_qty"));
                 return data;
             }
@@ -65,8 +64,7 @@ public class AdminUserQtyLimitService {
         return Integer.MAX_VALUE;
     }
 
-    public String saveQtyLimits(String username, int maxFuturesQty, int maxOptionsBuyQty,
-                                int maxOptionsSellQty, int maxOverseasQty) {
+    public String saveQtyLimits(String username, int maxFuturesQty, int maxOptionsQty, int maxOverseasQty) {
 
         SystemQtyLimit systemLimit = new SystemQtyLimitDAO().getSettings();
 
@@ -78,12 +76,8 @@ public class AdminUserQtyLimitService {
             return "시스템 국내선물 최대계약수(" + systemLimit.getMaxFuturesQty() + ")를 초과할 수 없습니다.";
         }
 
-        if (maxOptionsBuyQty > systemLimit.getMaxOptionsBuyQty()) {
-            return "시스템 옵션매수 최대계약수(" + systemLimit.getMaxOptionsBuyQty() + ")를 초과할 수 없습니다.";
-        }
-
-        if (maxOptionsSellQty > systemLimit.getMaxOptionsSellQty()) {
-            return "시스템 옵션매도 최대계약수(" + systemLimit.getMaxOptionsSellQty() + ")를 초과할 수 없습니다.";
+        if (maxOptionsQty > systemLimit.getMaxOptionsQty()) {
+            return "시스템 옵션 최대계약수(" + systemLimit.getMaxOptionsQty() + ")를 초과할 수 없습니다.";
         }
 
         if (maxOverseasQty > systemLimit.getMaxOverseasQty()) {
@@ -92,7 +86,7 @@ public class AdminUserQtyLimitService {
 
         String sql = """
         UPDATE user_qty_limits
-        SET max_futures_qty=?, max_options_buy_qty=?, max_options_sell_qty=?, max_overseas_qty=?
+        SET max_futures_qty=?, max_options_qty=?, max_overseas_qty=?
         WHERE user_id=(SELECT id FROM users WHERE username=?)
     """;
 
@@ -100,10 +94,9 @@ public class AdminUserQtyLimitService {
              PreparedStatement ps = conn.prepareStatement(sql)) {
 
             ps.setInt(1, maxFuturesQty);
-            ps.setInt(2, maxOptionsBuyQty);
-            ps.setInt(3, maxOptionsSellQty);
-            ps.setInt(4, maxOverseasQty);
-            ps.setString(5, username);
+            ps.setInt(2, maxOptionsQty);
+            ps.setInt(3, maxOverseasQty);
+            ps.setString(4, username);
             ps.executeUpdate();
 
             return null;

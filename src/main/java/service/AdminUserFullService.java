@@ -116,10 +116,10 @@ public class AdminUserFullService {
 
         // ---- 계약수 ----
         String sqlQty = """
-            SELECT max_futures_qty, max_options_buy_qty, max_options_sell_qty, max_overseas_qty
-            FROM user_qty_limits
-            WHERE user_id = (SELECT id FROM users WHERE username = ?)
-        """;
+                SELECT max_futures_qty, max_options_qty, max_overseas_qty
+                FROM user_qty_limits
+                WHERE user_id = (SELECT id FROM users WHERE username = ?)
+            """;
 
         // ---- 해외 개별계약수 ----
         String sqlOverseasQty = """
@@ -208,8 +208,7 @@ public class AdminUserFullService {
                 if (rs.next()) {
                     AdminUserQtyLimitData qtyData = new AdminUserQtyLimitData();
                     qtyData.setMaxFuturesQty(rs.getInt("max_futures_qty"));
-                    qtyData.setMaxOptionsBuyQty(rs.getInt("max_options_buy_qty"));
-                    qtyData.setMaxOptionsSellQty(rs.getInt("max_options_sell_qty"));
+                    qtyData.setMaxOptionsQty(rs.getInt("max_options_qty"));
                     qtyData.setMaxOverseasQty(rs.getInt("max_overseas_qty"));
                     response.qtyLimitData = qtyData;
                 }
@@ -269,10 +268,8 @@ public class AdminUserFullService {
 
         if (req.maxFuturesQty > systemLimit.getMaxFuturesQty())
             return "시스템 국내선물 최대계약수(" + systemLimit.getMaxFuturesQty() + ")를 초과할 수 없습니다.";
-        if (req.maxOptionsBuyQty > systemLimit.getMaxOptionsBuyQty())
-            return "시스템 옵션매수 최대계약수(" + systemLimit.getMaxOptionsBuyQty() + ")를 초과할 수 없습니다.";
-        if (req.maxOptionsSellQty > systemLimit.getMaxOptionsSellQty())
-            return "시스템 옵션매도 최대계약수(" + systemLimit.getMaxOptionsSellQty() + ")를 초과할 수 없습니다.";
+        if (req.maxOptionsQty > systemLimit.getMaxOptionsQty())
+            return "시스템 옵션 최대계약수(" + systemLimit.getMaxOptionsQty() + ")를 초과할 수 없습니다.";
         if (req.maxOverseasQty > systemLimit.getMaxOverseasQty())
             return "시스템 해외선물 최대계약수(" + systemLimit.getMaxOverseasQty() + ")를 초과할 수 없습니다.";
 
@@ -398,14 +395,13 @@ public class AdminUserFullService {
             // 2-4. 계약수
             try (PreparedStatement ps = conn.prepareStatement("""
                 UPDATE user_qty_limits
-                SET max_futures_qty=?, max_options_buy_qty=?, max_options_sell_qty=?, max_overseas_qty=?
+                SET max_futures_qty=?, max_options_qty=?, max_overseas_qty=?
                 WHERE user_id=(SELECT id FROM users WHERE username=?)
             """)) {
                 ps.setInt(1, req.maxFuturesQty);
-                ps.setInt(2, req.maxOptionsBuyQty);
-                ps.setInt(3, req.maxOptionsSellQty);
-                ps.setInt(4, req.maxOverseasQty);
-                ps.setString(5, req.username);
+                ps.setInt(2, req.maxOptionsQty);
+                ps.setInt(3, req.maxOverseasQty);
+                ps.setString(4, req.username);
                 ps.executeUpdate();
             }
 

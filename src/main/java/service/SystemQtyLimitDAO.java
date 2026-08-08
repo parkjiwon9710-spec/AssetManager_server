@@ -34,12 +34,8 @@ public class SystemQtyLimitDAO {
                         rs.getInt("max_futures_qty")
                 );
 
-                setting.setMaxOptionsBuyQty(
-                        rs.getInt("max_options_buy_qty")
-                );
-
-                setting.setMaxOptionsSellQty(
-                        rs.getInt("max_options_sell_qty")
+                setting.setMaxOptionsQty(
+                        rs.getInt("max_options_qty")
                 );
 
                 setting.setMaxOverseasQty(
@@ -58,16 +54,14 @@ public class SystemQtyLimitDAO {
 
     public void updateSettings(
             int futuresQty,
-            int optionBuyQty,
-            int optionSellQty,
+            int optionQty,
             int overseasQty
     ) {
 
         String sql =
                 "UPDATE system_qty_limits " +
                         "SET max_futures_qty=?, " +
-                        "max_options_buy_qty=?, " +
-                        "max_options_sell_qty=?, " +
+                        "max_options_qty=?, " +
                         "max_overseas_qty=? " +
                         "WHERE id=1";
 
@@ -80,9 +74,8 @@ public class SystemQtyLimitDAO {
         ) {
 
             stmt.setInt(1, futuresQty);
-            stmt.setInt(2, optionBuyQty);
-            stmt.setInt(3, optionSellQty);
-            stmt.setInt(4, overseasQty);
+            stmt.setInt(2, optionQty);
+            stmt.setInt(3, overseasQty);
 
             stmt.executeUpdate();
 

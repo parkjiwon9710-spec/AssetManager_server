@@ -88,7 +88,9 @@ public class DepositHistoryService {
                 String status = rs.getString("status");
 
                 double processedAmount;
-                if ("REJECTED".equals(status)) {
+                if (rs.getTimestamp("processed_at") == null) {   // 🔥 수정: PENDING 상태(미처리) 우선 체크
+                    processedAmount = 0;
+                } else if ("REJECTED".equals(status)) {
                     processedAmount = 0;
                 } else {
                     Object pa = rs.getObject("processed_amount");

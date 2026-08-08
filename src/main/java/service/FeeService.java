@@ -7,7 +7,7 @@ public class FeeService {
 
     private UserOverseasFeeDAO userOverseasFeeDAO = new UserOverseasFeeDAO();
     private SymbolFeeOverrideDAO symbolFeeOverrideDAO = new SymbolFeeOverrideDAO();
-    private ExchangeRateDAO exchangeRateDAODAO = new ExchangeRateDAO();
+
 
     // USD 기준 수수료
     //1순위가 오버라이드유무 2순위가 개인별 수수료 세번째가 마켓스피씨즈 기본값수수료
@@ -25,18 +25,15 @@ public class FeeService {
 
 
 
-    // KRW 환산
+    // KRW 환산   feeInSymbolCurrency:종목 통화 기준 수수료
     public double getOverseasFeeKRW(int userId, String symbol) {
 
+        double feeInSymbolCurrency = getOverseasFeeUSD(userId, symbol);
 
-        double usdFee =
-                getOverseasFeeUSD(userId, symbol);
+        MarketSpec spec = MarketSpecCache.get(symbol);
+        double rate = Store.ExchangeRateCache.getRate(spec.getCurrency());
 
-
-        double rate = Store.ExchangeRateCache.getRate("USD");
-
-
-        return usdFee * rate;
+        return feeInSymbolCurrency * rate;
     }
 
 
