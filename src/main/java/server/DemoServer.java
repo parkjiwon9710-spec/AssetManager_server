@@ -293,11 +293,7 @@ public class DemoServer {
 
                                     } else if ("SESSION_LIST_REQUEST".equals(type)) {
                                         SessionManager.sendSessionListTo(ctx);
-                                    } else if ("BLACKLIST_ADD".equals(type)) {          // ← 여기에 새로 추가
-                                        BlacklistAddRequest request = gson.fromJson(msg, BlacklistAddRequest.class);
-                                        blacklistDAO.addBlacklist(request.getTargetType(), request.getValue(), request.getReason());
-                                        System.out.println("[서버] 블랙리스트 등록 - " + request.getTargetType() + ": " + request.getValue());
-                                    } else if ("FORCE_LOGOUT_REQUEST".equals(type)) {          // ← 여기 새로 추가
+                                    }  else if ("FORCE_LOGOUT_REQUEST".equals(type)) {          // ← 여기 새로 추가
                                         ForceLogoutRequest request = gson.fromJson(msg, ForceLogoutRequest.class);
                                         int targetUserId = request.getTargetUserId();
 
@@ -1707,6 +1703,50 @@ public class DemoServer {
                                         List<model.MarketScheduleRow> rows = marketSpecDAO.loadScheduleRows();
                                         MarketScheduleResponse response = new MarketScheduleResponse(true, rows);
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                    }
+
+
+                                    else if ("AUTO_OVERNIGHT_GET_REQUEST".equals(type)) {
+                                        AutoOvernightGetRequest request = gson.fromJson(msg, AutoOvernightGetRequest.class);
+                                        boolean enabled = userStatusDAO.isAutoOvernight(request.userId);
+                                        AutoOvernightGetResponse response = new AutoOvernightGetResponse(enabled);
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                    }
+                                    else if ("AUTO_OVERNIGHT_SET_REQUEST".equals(type)) {
+                                        AutoOvernightSetRequest request = gson.fromJson(msg, AutoOvernightSetRequest.class);
+                                        userStatusDAO.updateAutoOvernight(request.userId, request.enabled);
+                                        AutoOvernightSetResult result = new AutoOvernightSetResult(true);
+                                        ctx.writeAndFlush(gson.toJson(result) + "\n");
+                                    }
+
+                                    else if ("BLACKLIST_LIST_REQUEST".equals(type)) {
+                                        BlacklistListRequest request = gson.fromJson(msg, BlacklistListRequest.class);
+                                        List<model.BlacklistRow> rows = blacklistDAO.loadAll(request.filterType);
+                                        BlacklistListResponse response = new BlacklistListResponse(rows);
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                    }else if ("BLACKLIST_ADD".equals(type)) {          // ← 여기에 새로 추가
+                                        BlacklistAddRequest request = gson.fromJson(msg, BlacklistAddRequest.class);
+                                        blacklistDAO.addBlacklist(request.getTargetType(), request.getValue(), request.getReason());
+                                        System.out.println("[서버] 블랙리스트 등록 - " + request.getTargetType() + ": " + request.getValue());
+
+                                        SessionManager.broadcastToAdmins(new BlacklistChangedEvent());  // 🔥 추가
+                                    }
+                                    else if ("BLACKLIST_REMOVE_REQUEST".equals(type)) {
+                                        BlacklistRemoveRequest request = gson.fromJson(msg, BlacklistRemoveRequest.class);
+                                        boolean success = blacklistDAO.delete(request.id);
+                                        ctx.writeAndFlush(gson.toJson(new BlacklistRemoveResult(success)) + "\n");
+
+                                        if (success) {
+                                            SessionManager.broadcastToAdmins(new BlacklistChangedEvent());  // 🔥 추가
+                                        }
+                                    }else if ("BLACKLIST_UPDATE_REQUEST".equals(type)) {
+                                        BlacklistUpdateRequest request = gson.fromJson(msg, BlacklistUpdateRequest.class);
+                                        boolean success = blacklistDAO.update(request.id, request.value, request.reason);
+                                        ctx.writeAndFlush(gson.toJson(new BlacklistUpdateResult(success)) + "\n");
+
+                                        if (success) {
+                                            SessionManager.broadcastToAdmins(new BlacklistChangedEvent());  // 🔥 추가
+                                        }
                                     }
 
 

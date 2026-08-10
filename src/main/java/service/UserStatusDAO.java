@@ -145,6 +145,35 @@ public class UserStatusDAO {
         return false;
     }
 
+    public boolean isOvernightPermitted(int userId) {
+
+        String sql =
+                "SELECT overnight_setting " +
+                        "FROM user_account_status " +
+                        "WHERE user_id = ?";
+
+        try (
+                Connection conn = DBUtil.getConnection();
+                PreparedStatement ps = conn.prepareStatement(sql)
+        ) {
+
+            ps.setInt(1, userId);
+
+            ResultSet rs = ps.executeQuery();
+
+            if (rs.next()) {
+                return rs.getBoolean("overnight_setting");
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        // 없으면 기본 미허용(안전 쪽으로)
+        return false;
+    }
+
+
     public void updateAutoOvernight(
             int userId,
             boolean enabled
