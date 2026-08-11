@@ -9,56 +9,68 @@ import java.util.List;
 
 public class AdminUserListService {
 
-    public List<AdminUserListRow> loadCustomers(String keyword) {
+    public List<AdminUserListRow> loadCustomers(String keyword, String searchType) {
 
         List<AdminUserListRow> list = new ArrayList<>();
 
+        String whereClause = switch (searchType) {
+            case "아이디" -> "u.username LIKE ?";
+            case "이름" -> "u.name LIKE ?";
+            case "입금계좌" -> "ca.alias LIKE ?";
+            case "추천인" -> "up.recommender LIKE ?";
+            case "메모" -> "up.memo_customer LIKE ?";
+            case "전체" -> "1=1";
+            default -> "u.username LIKE ?";
+        };
+
         String sql = """
-            SELECT
-                u.id,
-                u.created_at, u.username, u.name,
-                up.phone, up.recommender,
-                u.balance,
-                us.total_pnl, us.total_fee, us.total_winrate, us.is_online,
-                u.account_type,
-                uas.customer_grade, uas.account_status,
-                u.password,
-                up.email,
-                uas.server,
-                uas.overnight_setting,
-                us.trade_count, us.trade_days,
-                up.bank, up.account_number, up.account_holder, up.deposit_account,
-                us.last_trade_time,
-                ufs.futures_fee, ufs.options_fee, ufs.night_futures_fee, ufs.night_options_fee,
-              uql.max_futures_qty, uql.max_options_qty, uql.max_overseas_qty,
-                up.memo_customer, up.memo_partner,
-                us.last_login, us.login_fail_count,
-                up.join_ip, up.join_mac,
-                upe.overnight_permission, upe.chat_permission
-            FROM users u
-            LEFT JOIN user_profiles up ON u.id = up.user_id
-            LEFT JOIN user_account_status uas ON u.id = uas.user_id
-            LEFT JOIN user_fee_settings ufs ON u.id = ufs.user_id
-            LEFT JOIN user_qty_limits uql ON u.id = uql.user_id
-            LEFT JOIN user_status us ON u.id = us.user_id
-            LEFT JOIN user_permissions upe ON u.id = upe.user_id
-            WHERE u.role = 'USER'
-            AND (u.username LIKE ? OR u.name LIKE ?)
-            ORDER BY u.created_at DESC
-        """;
+        SELECT
+            u.id,
+            u.created_at, u.username, u.name,
+            up.phone, up.recommender,
+            u.balance,
+            us.total_pnl, us.total_fee, us.total_winrate, us.is_online,
+            u.account_type,
+            uas.customer_grade, uas.account_status,
+            u.password,
+            up.email,
+            uas.server,
+            uas.overnight_setting,
+            us.trade_count, us.trade_days,
+            up.bank, up.account_number, up.account_holder, ca.alias AS deposit_account_alias,
+            us.last_trade_time,
+            ufs.futures_fee, ufs.options_fee, ufs.night_futures_fee, ufs.night_options_fee,
+            uql.max_futures_qty, uql.max_options_qty, uql.max_overseas_qty,
+            up.memo_customer, up.memo_partner,
+            us.last_login, us.login_fail_count,
+            up.join_ip, up.join_mac,
+            upe.overnight_permission, upe.chat_permission
+        FROM users u
+        LEFT JOIN user_profiles up ON u.id = up.user_id
+        LEFT JOIN user_account_status uas ON u.id = uas.user_id
+        LEFT JOIN user_fee_settings ufs ON u.id = ufs.user_id
+        LEFT JOIN user_qty_limits uql ON u.id = uql.user_id
+        LEFT JOIN user_status us ON u.id = us.user_id
+        LEFT JOIN user_permissions upe ON u.id = upe.user_id
+        LEFT JOIN company_accounts ca ON up.deposit_account = ca.id
+        WHERE u.role = 'USER'
+        AND (%s)
+        ORDER BY u.created_at DESC
+    """.formatted(whereClause);
 
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
 
-            String kw = "%" + (keyword == null ? "" : keyword) + "%";
-            ps.setString(1, kw);
-            ps.setString(2, kw);
+            if (!"전체".equals(searchType)) {
+                String kw = "%" + (keyword == null ? "" : keyword) + "%";
+                ps.setString(1, kw);
+            }
 
             ResultSet rs = ps.executeQuery();
 
             while (rs.next()) {
                 AdminUserListRow row = new AdminUserListRow();
-                int userId = rs.getInt("id");   // 🔥 이 줄이 있는지 확인
+                int userId = rs.getInt("id");
                 row.setId(userId);
                 row.setCreatedAt(rs.getTimestamp("created_at"));
                 row.setUsername(rs.getString("username"));
@@ -82,7 +94,7 @@ public class AdminUserListService {
                 row.setBank(rs.getString("bank"));
                 row.setAccountNumber(rs.getString("account_number"));
                 row.setAccountHolder(rs.getString("account_holder"));
-                row.setDepositAccount(rs.getString("deposit_account"));
+                row.setDepositAccount(rs.getString("deposit_account_alias"));
                 row.setLastTradeTime(rs.getTimestamp("last_trade_time") == null ? "-" : rs.getTimestamp("last_trade_time"));
                 row.setFuturesFee(rs.getDouble("futures_fee"));
                 row.setOptionsFee(rs.getDouble("options_fee"));
@@ -91,7 +103,7 @@ public class AdminUserListService {
                 row.setMaxFuturesQty(rs.getInt("max_futures_qty"));
                 row.setMaxOptionsQty(rs.getInt("max_options_qty"));
                 row.setMaxOverseasQty(rs.getInt("max_overseas_qty"));
-                row.setOverseasLimitSummary(              // ← 이게 있어야 함
+                row.setOverseasLimitSummary(
                         buildOverseasLimitSummary(conn, userId, rs.getInt("max_overseas_qty"))
                 );
                 row.setMemoCustomer(rs.getString("memo_customer"));
@@ -112,6 +124,30 @@ public class AdminUserListService {
 
         return list;
     }
+
+
+
+    public List<Integer> getAllUserIds() {
+        List<Integer> ids = new ArrayList<>();
+        String sql = "SELECT id FROM users WHERE role = 'USER'";
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+
+            while (rs.next()) {
+                ids.add(rs.getInt("id"));
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+
+        return ids;
+    }
+
+
+
 
     private String buildOverseasLimitSummary(Connection conn, int userId, int defaultQty) throws SQLException {
 

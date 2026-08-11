@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import Market.MarketSpec;
 import Market.MarketSpecCache;
+import server.AdminOverseasSymbolScaffoldResponse;
 import server.AdminUserFullResponse;
 import server.AdminUserFullSaveRequest;
 import service.SystemQtyLimitDAO;
@@ -241,6 +242,33 @@ public class AdminUserFullService {
 
         return response;
     }
+
+
+
+
+
+
+
+    public AdminOverseasSymbolScaffoldResponse getOverseasSymbolScaffold() {
+
+        List<OverseasQtyRow> overseasQtyRows = new ArrayList<>();
+        List<String> symbolKorList = new ArrayList<>();
+
+        for (MarketSpec spec : MarketSpecCache.getAll()) {
+            if (!"OVERSEAS_FUTURES".equalsIgnoreCase(spec.getMarketType())) continue;
+            overseasQtyRows.add(new OverseasQtyRow(spec.getSymbol(), null));
+            symbolKorList.add(symbolToKor(spec.getSymbol())); // 기존 메서드 그대로 재사용
+        }
+
+        model.SystemQtyLimit systemLimit = new SystemQtyLimitDAO().getSettings();
+        int systemMax = systemLimit != null ? systemLimit.getMaxOverseasQty() : Integer.MAX_VALUE;
+
+        return new AdminOverseasSymbolScaffoldResponse(overseasQtyRows, symbolKorList, systemMax);
+    }
+
+
+
+
 
     // =========================================================
     // 통합 저장 - 하나의 트랜잭션

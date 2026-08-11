@@ -45,7 +45,7 @@ public class AdminPositionAggregateService {
         List<AdminPositionRow> positions = new ArrayList<>();
         List<AdminPendingOrderRow> pendingOrders = new ArrayList<>();
 
-        List<AdminUserListRow> customers = adminUserListService.loadCustomers("");
+        List<AdminUserListRow> customers = adminUserListService.loadCustomers("", "전체");
 
         for (AdminUserListRow customer : customers) {
             int userId = customer.getId();

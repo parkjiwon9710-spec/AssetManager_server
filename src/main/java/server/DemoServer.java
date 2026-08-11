@@ -71,6 +71,9 @@ public class DemoServer {
 
     private static final service.ChartService chartService = new ChartService();
 
+    private static final service.AdminUserBulkEditService adminUserBulkEditService = new AdminUserBulkEditService();
+
+
     public static void main(String[] args) throws InterruptedException {
 
 
@@ -270,7 +273,7 @@ public class DemoServer {
                                             }
                                             // 마지막 로그인 갱신
                                             userStatusDAO.updateLastLogin(user.getId());
-
+                                            userStatusDAO.resetLoginFailCount(user.getId());
 // 사운드 설정 조회
                                             SoundSetting sound = soundSettingDAO.load(user.getId());
 
@@ -286,6 +289,7 @@ public class DemoServer {
 
                                         } else {
                                             response = new LoginResponse(false, "아이디 또는 비밀번호가 틀렸습니다");
+                                            userStatusDAO.incrementLoginFailCount(request.getUsername());
                                             System.out.println("[서버] 로그인 실패 - 아이디/비밀번호 불일치: " + request.getUsername());   // 추가
                                         }
 
@@ -838,10 +842,10 @@ public class DemoServer {
                                     } else if ("CHAT_LIST_REQUEST".equals(type)) {
                                         ChatListUpdate response = new ChatListUpdate(chatDAO.getChatList());
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
-                                    }else if ("ADMIN_USER_LIST_REQUEST".equals(type)) {
+                                    } else if ("ADMIN_USER_LIST_REQUEST".equals(type)) {
                                         new Thread(() -> {
                                             AdminUserListRequest req = gson.fromJson(msg, AdminUserListRequest.class);
-                                            List<AdminUserListRow> rows = adminUserListService.loadCustomers(req.keyword);
+                                            List<AdminUserListRow> rows = adminUserListService.loadCustomers(req.keyword, req.searchType);
                                             ctx.writeAndFlush(gson.toJson(new AdminUserListResponse(rows)) + "\n");
                                         }).start();
                                     }
@@ -1093,6 +1097,32 @@ public class DemoServer {
 
 /// //////////////////////////////////////////상세정보끝
 
+
+                                    /// /고객정보 일괄설정
+                                    else if ("ADMIN_USER_BULK_EDIT_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            AdminUserBulkEditRequest req = gson.fromJson(msg, AdminUserBulkEditRequest.class);
+
+                                            AdminUserBulkEditResult result = adminUserBulkEditService.saveBulk(req);
+
+                                            ctx.writeAndFlush(gson.toJson(result) + "\n");
+
+                                            if (result.successCount > 0) {
+                                                for (String username : req.usernames) {
+                                                    SessionManager.broadcastToAdmins(new UserDataChangedEvent(username, req.adminId));
+                                                }
+                                            }
+                                        }).start();
+                                    }
+/// //////////////////////////////////////////////////////////
+/// ///해선종목만 받아오기
+                                    else if ("ADMIN_OVERSEAS_SYMBOL_SCAFFOLD_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            AdminOverseasSymbolScaffoldResponse response = adminUserFullService.getOverseasSymbolScaffold();
+                                            ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        }).start();
+                                    }
+                                   //////////////////////
                                     /// //////새로운 고객 추가할 때
                                     else if ("ADMIN_USER_REGISTER_REQUEST".equals(type)) {
                                         new Thread(() -> {
@@ -1653,20 +1683,14 @@ public class DemoServer {
                                     }
                                     else if ("ADMIN_CANCEL_ALL_ORDERS_REQUEST".equals(type)) {
                                         new Thread(() -> {
-                                            List<model.AdminUserListRow> customers = adminUserListService.loadCustomers("");
-                                            for (model.AdminUserListRow c : customers) {
-                                                orderDAO.cancelAll(c.getId());
+                                            List<Integer> userIds = adminUserListService.getAllUserIds();
+                                            for (Integer userId : userIds) {
+                                                orderDAO.cancelAll(userId);
                                                 SessionManager.sendEventToCustomer(
-                                                        c.getId(),
+                                                        userId,
                                                         new ClientEventMessage("PENDING_ORDER_CHANGED", null, "ORDER_CANCELLED")
                                                 );
                                             }
-
-                                            server.AdminActionResult result =
-                                                    new server.AdminActionResult(true, "전체 미체결 취소 완료");
-                                            ctx.writeAndFlush(gson.toJson(result) + "\n");
-
-                                            SessionManager.broadcastToAdmins(adminPositionAggregateService.computeAll());
                                         }).start();
                                     }
 
