@@ -102,4 +102,26 @@ public class ChatDAO {
         } catch (Exception e) { e.printStackTrace(); }
         return list;
     }
+
+
+
+    public boolean deleteChatRooms(List<Integer> userIds) {
+        if (userIds == null || userIds.isEmpty()) return false;
+
+        String placeholders = String.join(",", java.util.Collections.nCopies(userIds.size(), "?"));
+        String sql = "DELETE FROM chat_messages WHERE user_id IN (" + placeholders + ")";
+
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (int i = 0; i < userIds.size(); i++) {
+                ps.setInt(i + 1, userIds.get(i));
+            }
+            ps.executeUpdate();
+            return true;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+    }
+
 }

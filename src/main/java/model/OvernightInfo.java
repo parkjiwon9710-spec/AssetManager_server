@@ -10,7 +10,8 @@ public class OvernightInfo {
     private long usedMargin;
     private long requiredMargin;
     private long availableMargin;
-
+    private String unavailableReason; // null이면 가능, 아니면 사유 텍스트
+    private boolean permitted = true;
     private boolean possible;
     private LocalTime targetCloseTime;
 
@@ -48,6 +49,12 @@ public class OvernightInfo {
     public void setAvailableMargin(long availableMargin) {
         this.availableMargin = availableMargin;
     }
+
+    public String getUnavailableReason() { return unavailableReason; }
+    public void setUnavailableReason(String reason) { this.unavailableReason = reason; }
+
+    public boolean isPermitted() { return permitted; }
+    public void setPermitted(boolean permitted) { this.permitted = permitted; }
 
     public boolean isPossible() {
         return possible;

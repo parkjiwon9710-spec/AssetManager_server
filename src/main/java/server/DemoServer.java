@@ -11,6 +11,8 @@ import io.netty.handler.codec.DelimiterBasedFrameDecoder;
 import io.netty.handler.codec.Delimiters;
 import io.netty.handler.codec.string.StringDecoder;
 import io.netty.handler.codec.string.StringEncoder;
+import io.netty.handler.timeout.IdleStateHandler;
+import io.netty.handler.timeout.IdleStateEvent;
 import model.*;
 import service.*;
 
@@ -84,6 +86,9 @@ public class DemoServer {
 
 
     private static final service.ChartService chartService = new ChartService();
+
+    private static final service.AdminUserBulkEditService adminUserBulkEditService = new AdminUserBulkEditService();
+
 
     public static void main(String[] args) throws InterruptedException {
 
@@ -260,6 +265,7 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                             pipeline.addLast(new DelimiterBasedFrameDecoder(1024* 1024, Delimiters.lineDelimiter()));
                             pipeline.addLast(new StringDecoder());
                             pipeline.addLast(new StringEncoder());
+                            pipeline.addLast(new IdleStateHandler(15, 0, 0, java.util.concurrent.TimeUnit.SECONDS)); // 🔥 추가 - 15초간 아무 데이터도 안 오면 IDLE 이벤트 발생
 
                             pipeline.addLast(new SimpleChannelInboundHandler<String>() {
                                 @Override
@@ -299,7 +305,7 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                             }
                                             // 마지막 로그인 갱신
                                             userStatusDAO.updateLastLogin(user.getId());
-
+                                            userStatusDAO.resetLoginFailCount(user.getId());
 // 사운드 설정 조회
                                             SoundSetting sound = soundSettingDAO.load(user.getId());
 
@@ -310,23 +316,73 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                                     sound.isOrderModified(), sound.isOrderCancelled()
                                             );
 
-                                            SessionManager.register(user.getId(), user.getUsername(), user.getName(), mac, user.getRole(), ctx);
+                                            boolean registered = SessionManager.register(user.getId(), user.getUsername(), user.getName(), mac, user.getRole(), ctx);
+
+                                            if (!registered) {
+                                                response = new LoginResponse(false, "이미 다른 곳에서 접속 중입니다.");
+                                                ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                                System.out.println("[서버] 로그인 거부 - 이중접속 시도, userId: " + user.getId());
+                                                return;
+                                            }
+
                                             System.out.println("[서버] 로그인 성공 - userId: " + user.getId());
 
                                         } else {
                                             response = new LoginResponse(false, "아이디 또는 비밀번호가 틀렸습니다");
+                                            userStatusDAO.incrementLoginFailCount(request.getUsername());
                                             System.out.println("[서버] 로그인 실패 - 아이디/비밀번호 불일치: " + request.getUsername());   // 추가
                                         }
 
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
 
-                                    } else if ("SESSION_LIST_REQUEST".equals(type)) {
+                                    }
+                                    else if ("ADMIN_PROXY_TOKEN_REQUEST".equals(type)) {
+                                        AdminProxyTokenRequest request = gson.fromJson(msg, AdminProxyTokenRequest.class);
+                                        String role = ctx.channel().attr(SessionManager.ROLE_KEY).get();
+
+                                        System.out.println("[디버그] 대리접속 요청 - role=" + role + ", username=" + request.getUsername());   // 🔥 추가
+
+                                        if (!"ADMIN".equals(role)) {
+                                            System.out.println("[디버그] 관리자 권한 체크 실패");   // 🔥 추가
+                                            ctx.writeAndFlush(gson.toJson(new AdminProxyTokenResponse(false, "관리자 권한이 필요합니다", null)) + "\n");
+                                        } else {
+                                            User targetUser = userDAO.findByUsername(request.getUsername());
+                                            System.out.println("[디버그] findByUsername 결과 = " + targetUser);   // 🔥 추가
+                                            if (targetUser == null) {
+                                                ctx.writeAndFlush(gson.toJson(new AdminProxyTokenResponse(false, "고객을 찾을 수 없습니다", null)) + "\n");
+                                            } else {
+                                                String token = SessionManager.issueProxyToken(targetUser.getId());
+                                                ctx.writeAndFlush(gson.toJson(new AdminProxyTokenResponse(true, "발급 완료", token)) + "\n");
+                                            }
+                                        }
+                                    }
+                                    else if ("PROXY_LOGIN_REQUEST".equals(type)) {
+                                        ProxyLoginRequest request = gson.fromJson(msg, ProxyLoginRequest.class);
+                                        Integer targetUserId = SessionManager.consumeProxyToken(request.getToken());
+
+                                        LoginResponse response;
+                                        if (targetUserId == null) {
+                                            response = new LoginResponse(false, "토큰이 유효하지 않거나 만료되었습니다.");
+                                        } else {
+                                            User user = userDAO.getUserById(targetUserId);
+                                            if (user == null) {
+                                                response = new LoginResponse(false, "고객 정보를 찾을 수 없습니다.");
+                                            } else {
+                                                SoundSetting sound = soundSettingDAO.load(user.getId());
+                                                response = new LoginResponse(
+                                                        true, "로그인 성공", user.getId(), user.getUsername(), user.getName(), user.getRole(), user.getBalance(),
+                                                        sound.isBuyExecuted(), sound.isSellExecuted(),
+                                                        sound.isBuyReserved(), sound.isSellReserved(),
+                                                        sound.isOrderModified(), sound.isOrderCancelled()
+                                                );
+                                                SessionManager.register(user.getId(), user.getUsername(), user.getName(), request.getMac(), user.getRole(), ctx, true);
+                                            }
+                                        }
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                    }
+                                    else if ("SESSION_LIST_REQUEST".equals(type)) {
                                         SessionManager.sendSessionListTo(ctx);
-                                    } else if ("BLACKLIST_ADD".equals(type)) {          // ← 여기에 새로 추가
-                                        BlacklistAddRequest request = gson.fromJson(msg, BlacklistAddRequest.class);
-                                        blacklistDAO.addBlacklist(request.getTargetType(), request.getValue(), request.getReason());
-                                        System.out.println("[서버] 블랙리스트 등록 - " + request.getTargetType() + ": " + request.getValue());
-                                    } else if ("FORCE_LOGOUT_REQUEST".equals(type)) {          // ← 여기 새로 추가
+                                    }  else if ("FORCE_LOGOUT_REQUEST".equals(type)) {          // ← 여기 새로 추가
                                         ForceLogoutRequest request = gson.fromJson(msg, ForceLogoutRequest.class);
                                         int targetUserId = request.getTargetUserId();
 
@@ -855,7 +911,24 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                             SessionManager.broadcastToAdmins(new ChatListUpdate(chatDAO.getChatList()));
                                         }
-                                    } else if ("CHAT_MARK_READ_REQUEST".equals(type)) {
+                                    }
+                                    else if ("CHAT_DELETE_REQUEST".equals(type)) {
+                                        ChatDeleteRequest req = gson.fromJson(msg, ChatDeleteRequest.class);
+                                        boolean success = chatDAO.deleteChatRooms(req.getRoomIds());
+
+                                        ChatDeleteResult result = new ChatDeleteResult(success, req.getRoomIds());
+                                        ctx.writeAndFlush(gson.toJson(result) + "\n");
+
+                                        if (success) {
+                                            SessionManager.broadcastToAdmins(new ChatListUpdate(chatDAO.getChatList()));
+
+                                            // 🔥 삭제된 각 방의 유저에게도 푸시 - 채팅창 켜놓고 있으면 즉시 비워짐
+                                            for (int roomId : req.getRoomIds()) {
+                                                SessionManager.sendToCustomer(roomId, new ChatPushEvent(roomId, "ROOM_DELETED", null));
+                                            }
+                                        }
+                                    }
+                                    else if ("CHAT_MARK_READ_REQUEST".equals(type)) {
                                         ChatMarkReadRequest request = gson.fromJson(msg, ChatMarkReadRequest.class);
 
                                         if ("USER".equals(request.getReaderType())) {
@@ -871,10 +944,10 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                     } else if ("CHAT_LIST_REQUEST".equals(type)) {
                                         ChatListUpdate response = new ChatListUpdate(chatDAO.getChatList());
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
-                                    }else if ("ADMIN_USER_LIST_REQUEST".equals(type)) {
+                                    } else if ("ADMIN_USER_LIST_REQUEST".equals(type)) {
                                         new Thread(() -> {
                                             AdminUserListRequest req = gson.fromJson(msg, AdminUserListRequest.class);
-                                            List<AdminUserListRow> rows = adminUserListService.loadCustomers(req.keyword);
+                                            List<AdminUserListRow> rows = adminUserListService.loadCustomers(req.keyword, req.searchType);
                                             ctx.writeAndFlush(gson.toJson(new AdminUserListResponse(rows)) + "\n");
                                         }).start();
                                     }
@@ -979,7 +1052,7 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                                 topInfoService.pushToUser(userId);
                                                 customerDepositService.pushBalanceToUser(userId);
-                                                SessionManager.broadcastToAdmins(new UserDataChangedEvent(req.username, req.adminId));
+                                                SessionManager.broadcastToAdmins(new model.DataChangedEvent("USER_DATA", req.username, req.adminId));
 
                                                 // 고객에게는 승인 사운드
                                                 String customerSoundType = req.delta > 0 ? "DEPOSIT_APPROVED" : "WITHDRAW_APPROVED";
@@ -1119,13 +1192,39 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                             )) + "\n");
 
                                             if (success) {
-                                                SessionManager.broadcastToAdmins(new UserDataChangedEvent(req.username, req.adminId));
+                                                SessionManager.broadcastToAdmins(new model.DataChangedEvent("USER_DATA", req.username, req.adminId));
                                             }
                                         }).start();
                                     }
 
 /// //////////////////////////////////////////상세정보끝
 
+
+                                    /// /고객정보 일괄설정
+                                    else if ("ADMIN_USER_BULK_EDIT_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            AdminUserBulkEditRequest req = gson.fromJson(msg, AdminUserBulkEditRequest.class);
+
+                                            AdminUserBulkEditResult result = adminUserBulkEditService.saveBulk(req);
+
+                                            ctx.writeAndFlush(gson.toJson(result) + "\n");
+
+                                            if (result.successCount > 0) {
+                                                for (String username : req.usernames) {
+                                                    SessionManager.broadcastToAdmins(new model.DataChangedEvent("USER_DATA", username, req.adminId));
+                                                }
+                                            }
+                                        }).start();
+                                    }
+/// //////////////////////////////////////////////////////////
+/// ///해선종목만 받아오기
+                                    else if ("ADMIN_OVERSEAS_SYMBOL_SCAFFOLD_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            AdminOverseasSymbolScaffoldResponse response = adminUserFullService.getOverseasSymbolScaffold();
+                                            ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        }).start();
+                                    }
+                                   //////////////////////
                                     /// //////새로운 고객 추가할 때
                                     else if ("ADMIN_USER_REGISTER_REQUEST".equals(type)) {
                                         new Thread(() -> {
@@ -1140,7 +1239,7 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                             if (success) {
                                                 // 신규가입도 목록에 영향 주니 관리자 전원 목록 갱신 신호
-                                                SessionManager.broadcastToAdmins(new UserDataChangedEvent(req.username, req.adminId));
+                                                SessionManager.broadcastToAdmins(new model.DataChangedEvent("USER_DATA", req.username, req.adminId));
                                             }
                                         }).start();
                                     }
@@ -1161,15 +1260,16 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                     FeeOverrideListResponse response = new FeeOverrideListResponse(rows);
                                     ctx.writeAndFlush(gson.toJson(response) + "\n");
 
-                                } else if ("FEE_OVERRIDE_SAVE_REQUEST".equals(type)) {
-                                    FeeOverrideSaveRequest request = gson.fromJson(msg, FeeOverrideSaveRequest.class);
+                                    } else if ("FEE_OVERRIDE_SAVE_REQUEST".equals(type)) {
+                                        FeeOverrideSaveRequest request = gson.fromJson(msg, FeeOverrideSaveRequest.class);
 
-                                    symbolFeeOverrideDAO.saveAllOverrides(request.getRows());
+                                        symbolFeeOverrideDAO.saveAllOverrides(request.getRows());
 
-                                    FeeOverrideSaveResponse response = new FeeOverrideSaveResponse(true, "저장 완료");
-                                    ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        FeeOverrideSaveResponse response = new FeeOverrideSaveResponse(true, "저장 완료");
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        SessionManager.broadcastToAdmins(new model.DataChangedEvent("FEE_OVERRIDE")); // 🔥 추가
 
-                                    System.out.println("[서버] 수수료 오버라이드 저장 완료 - " + request.getRows().size() + "개 종목");
+                                        System.out.println("[서버] 수수료 오버라이드 저장 완료 - " + request.getRows().size() + "개 종목");
                                     } else if ("COMPANY_ACCOUNT_LIST_REQUEST".equals(type)) {
 
                                         List<Object[]> raw = companyAccountDAO.getAll();
@@ -1200,6 +1300,9 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                         CompanyAccountSaveResponse response = new CompanyAccountSaveResponse(true, "처리 완료");
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
 
+                                        // 🔥 추가 - 모든 관리자에게 회사계좌 목록 변경 신호
+                                        SessionManager.broadcastToAdmins(new model.DataChangedEvent("COMPANY_ACCOUNT"));
+
                                         System.out.println("[서버] 회사계좌 " + request.getMode() + " 처리 완료");
                                     } else if ("MARKET_OPERATION_LOAD_REQUEST".equals(type)) {
 
@@ -1222,6 +1325,7 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                         MarketOperationSaveResponse response = new MarketOperationSaveResponse(true, "국내선물 저장 완료");
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        SessionManager.broadcastToAdmins(new model.DataChangedEvent("MARKET_OPERATION")); // 🔥 추가
                                         System.out.println("[서버] 국내선물 운영시간 저장 완료");
 
                                     } else if ("OPTION_SAVE_REQUEST".equals(type)) {
@@ -1235,45 +1339,58 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                                     request.getExpiryDate()
                                             );
 
-
                                             OvernightSchedulerHolder.get().reload();
 
-                                            MarketOperationSaveResponse response = new MarketOperationSaveResponse(true, "옵션 저장 완료");   // 🔥 메시지 추가
+                                            MarketOperationSaveResponse response = new MarketOperationSaveResponse(true, "옵션 저장 완료");
                                             ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                            SessionManager.broadcastToAdmins(new model.DataChangedEvent("MARKET_OPERATION")); // 🔥 추가
                                             System.out.println("[서버] 옵션 운영시간 저장 완료");
 
                                         } catch (Exception e) {
                                             e.printStackTrace();
-                                            MarketOperationSaveResponse response = new MarketOperationSaveResponse(false, "옵션 저장 실패");   // 🔥 메시지 추가
+                                            MarketOperationSaveResponse response = new MarketOperationSaveResponse(false, "옵션 저장 실패");
                                             ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                            // 🔥 실패 시엔 브로드캐스트 안 함
                                         }
-                                    } else if ("HSI_SAVE_REQUEST".equals(type)) {
-                                        HsiSaveRequest request = gson.fromJson(msg, HsiSaveRequest.class);
+                                    }else if ("HSI_SAVE_REQUEST".equals(type)) {
+                                                     HsiSaveRequest request = gson.fromJson(msg, HsiSaveRequest.class);
 
-                                        marketSpecDAO.saveHsiData(
-                                                request.getStart1(), request.getEnd1(), request.getStart2(), request.getEnd2(),
-                                                request.getStart3(), request.getEnd3(), request.isHolidayToday(), request.getExpiryDate()
-                                        );
+                                                     marketSpecDAO.saveHsiData(
+                                                             request.getStart1(), request.getEnd1(), request.getStart2(), request.getEnd2(),
+                                                             request.getStart3(), request.getEnd3(), request.isHolidayToday(), request.getExpiryDate()
+                                                     );
 
-                                        OvernightSchedulerHolder.get().reload();
+                                                     OvernightSchedulerHolder.get().reload();
 
-                                        MarketOperationSaveResponse response = new MarketOperationSaveResponse(true, "항셍 저장 완료");
-                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
-                                        System.out.println("[서버] 항셍 운영시간 저장 완료");
+                                                     MarketOperationSaveResponse response = new MarketOperationSaveResponse(true, "항셍 저장 완료");
+                                                     ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                                     SessionManager.broadcastToAdmins(new model.DataChangedEvent("MARKET_OPERATION")); // 🔥 추가
+                                                     System.out.println("[서버] 항셍 운영시간 저장 완료");
 
                                     } else if ("OVERSEAS_SAVE_REQUEST".equals(type)) {
                                         OverseasSaveRequest request = gson.fromJson(msg, OverseasSaveRequest.class);
 
                                         marketSpecDAO.saveOverseasDataList(request.getRows());
 
-
                                         OvernightSchedulerHolder.get().reload();
 
                                         MarketOperationSaveResponse response = new MarketOperationSaveResponse(true, "해외선물 저장 완료");
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        SessionManager.broadcastToAdmins(new model.DataChangedEvent("MARKET_OPERATION")); // 🔥 추가
                                         System.out.println("[서버] 해외선물 운영시간 저장 완료");
 
-                                    } else if ("SYSTEM_QTY_LIMIT_LOAD_REQUEST".equals(type)) {
+
+
+
+
+                                        /// //////////////
+//                                        AdminTradeLimitPanel — 4개 개별 저장 버튼 → "전체 저장" 하나로 통합, SYSTEM_QTY_LIMIT + TRADE_LIMIT 두 scope로 리스너 등록, cleanup() 추가
+//                                        AdminSymbolValueSettingDialog — SYMBOL_VALUE scope + key(ENTRY/LOSSCUT/OVERNIGHT)로 필터링하는 리스너 추가, 다이얼로그 닫힐 때 해제
+//                                        AdminSymbolPermissionDialog — SYMBOL_PERMISSION scope로 리스너 추가, 다이얼로그 닫힐 때 해제
+//                                        서버(DemoServer.java) — 6곳(SYSTEM_QTY_LIMIT_SAVE, ENTRY_MARGIN_SAVE, MAINT_MARGIN_SAVE, OVERNIGHT_SETTINGS_SAVE, SYMBOL_VALUE_SAVE, SYMBOL_PERMISSION_SAVE)에 브로드캐스트 추가
+//                                        AdminTradeRuleFrame — tradeLimitPanel.cleanup()을 windowClosed에 추가
+                                                /// ////////////
+                                    }else if ("SYSTEM_QTY_LIMIT_LOAD_REQUEST".equals(type)) {
                                         model.SystemQtyLimit data = systemQtyLimitDAO.getSettings();
                                         SystemQtyLimitResponse response = new SystemQtyLimitResponse(data);
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
@@ -1285,6 +1402,7 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                         );
                                         SystemQtyLimitSaveResponse response = new SystemQtyLimitSaveResponse(true);
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        SessionManager.broadcastToAdmins(new model.DataChangedEvent("SYSTEM_QTY_LIMIT")); // 🔥 추가
                                         System.out.println("[서버] 시스템 계약수 한도 저장 완료");
                                     } else if ("TRADE_LIMIT_LOAD_REQUEST".equals(type)) {
 
@@ -1330,6 +1448,7 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                     TradeLimitSaveResponse response = new TradeLimitSaveResponse(true, "엔트리 증거금 설정 저장완료");
                                     ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        SessionManager.broadcastToAdmins(new model.DataChangedEvent("TRADE_LIMIT")); // 🔥 추가
                                     System.out.println("[서버] 엔트리 증거금 설정 저장 완료");
                                 }
                                     else if ("MAINT_MARGIN_SAVE_REQUEST".equals(type)) {
@@ -1353,6 +1472,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                         TradeLimitSaveResponse response = new TradeLimitSaveResponse(true, "유지증거금 저장완료");
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        SessionManager.broadcastToAdmins(new model.DataChangedEvent("TRADE_LIMIT")); // 🔥 추가
+
                                         System.out.println("[서버] 유지증거금 저장 완료");
                                     }
                                     else if ("OVERNIGHT_SETTINGS_SAVE_REQUEST".equals(type)) {
@@ -1392,6 +1513,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                         TradeLimitSaveResponse response = new TradeLimitSaveResponse(true, "오버나잇 설정 저장완료");
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        SessionManager.broadcastToAdmins(new model.DataChangedEvent("TRADE_LIMIT")); // 🔥 추가
+
                                         System.out.println("[서버] 오버나잇 설정 저장 완료");
                                     }else if ("SYMBOL_VALUE_LOAD_REQUEST".equals(type)) {
                                         SymbolValueLoadRequest request = gson.fromJson(msg, SymbolValueLoadRequest.class);
@@ -1425,6 +1548,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                         TradeLimitSaveResponse response = new TradeLimitSaveResponse(true, "개별설정 저장완료");
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        // 🔥 추가 - key에 marginType을 넣어서, 같은 타입 다이얼로그만 반응하게 함
+                                        SessionManager.broadcastToAdmins(new model.DataChangedEvent("SYMBOL_VALUE", request.getMarginType(), null));
                                         System.out.println("[서버] 심볼별 값 설정 저장 완료");
 
                                     } else if ("SYMBOL_PERMISSION_LOAD_REQUEST".equals(type)) {
@@ -1447,6 +1572,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                         TradeLimitSaveResponse response = new TradeLimitSaveResponse(true, "개별 허용설정 저장완료");
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        SessionManager.broadcastToAdmins(new model.DataChangedEvent("SYMBOL_PERMISSION")); // 🔥 추가
+
                                         System.out.println("[서버] 심볼별 허용 설정 저장 완료");
                                     }
 
@@ -1485,8 +1612,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                             )) + "\n");
 
                                             if (success) {
-                                                SessionManager.broadcastToAdmins(new NoticeChangedEvent());
-                                                SessionManager.broadcastToCustomers(new NoticeChangedEvent());
+                                                SessionManager.broadcastToAdmins(new model.DataChangedEvent("NOTICE"));
+                                                SessionManager.broadcastToCustomers(new model.DataChangedEvent("NOTICE"));
                                             }
                                         }).start();
                                     }
@@ -1501,8 +1628,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                             )) + "\n");
 
                                             if (success) {
-                                                SessionManager.broadcastToAdmins(new NoticeChangedEvent());
-                                                SessionManager.broadcastToCustomers(new NoticeChangedEvent());
+                                                SessionManager.broadcastToAdmins(new model.DataChangedEvent("NOTICE"));
+                                                SessionManager.broadcastToCustomers(new model.DataChangedEvent("NOTICE"));
                                             }
                                         }).start();
                                     }
@@ -1517,8 +1644,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                             )) + "\n");
 
                                             if (success) {
-                                                SessionManager.broadcastToAdmins(new NoticeChangedEvent());
-                                                SessionManager.broadcastToCustomers(new NoticeChangedEvent());
+                                                SessionManager.broadcastToAdmins(new model.DataChangedEvent("NOTICE"));
+                                                SessionManager.broadcastToCustomers(new model.DataChangedEvent("NOTICE"));
                                             }
                                         }).start();
                                     }
@@ -1686,20 +1813,14 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                     }
                                     else if ("ADMIN_CANCEL_ALL_ORDERS_REQUEST".equals(type)) {
                                         new Thread(() -> {
-                                            List<model.AdminUserListRow> customers = adminUserListService.loadCustomers("");
-                                            for (model.AdminUserListRow c : customers) {
-                                                orderDAO.cancelAll(c.getId());
+                                            List<Integer> userIds = adminUserListService.getAllUserIds();
+                                            for (Integer userId : userIds) {
+                                                orderDAO.cancelAll(userId);
                                                 SessionManager.sendEventToCustomer(
-                                                        c.getId(),
+                                                        userId,
                                                         new ClientEventMessage("PENDING_ORDER_CHANGED", null, "ORDER_CANCELLED")
                                                 );
                                             }
-
-                                            server.AdminActionResult result =
-                                                    new server.AdminActionResult(true, "전체 미체결 취소 완료");
-                                            ctx.writeAndFlush(gson.toJson(result) + "\n");
-
-                                            SessionManager.broadcastToAdmins(adminPositionAggregateService.computeAll());
                                         }).start();
                                     }
 
@@ -1739,12 +1860,68 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                     }
 
 
+                                    else if ("AUTO_OVERNIGHT_GET_REQUEST".equals(type)) {
+                                        AutoOvernightGetRequest request = gson.fromJson(msg, AutoOvernightGetRequest.class);
+                                        boolean enabled = userStatusDAO.isAutoOvernight(request.userId);
+                                        AutoOvernightGetResponse response = new AutoOvernightGetResponse(enabled);
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                    }
+                                    else if ("AUTO_OVERNIGHT_SET_REQUEST".equals(type)) {
+                                        AutoOvernightSetRequest request = gson.fromJson(msg, AutoOvernightSetRequest.class);
+                                        userStatusDAO.updateAutoOvernight(request.userId, request.enabled);
+                                        AutoOvernightSetResult result = new AutoOvernightSetResult(true);
+                                        ctx.writeAndFlush(gson.toJson(result) + "\n");
+                                    }
+
+                                    else if ("BLACKLIST_LIST_REQUEST".equals(type)) {
+                                        BlacklistListRequest request = gson.fromJson(msg, BlacklistListRequest.class);
+                                        List<model.BlacklistRow> rows = blacklistDAO.loadAll(request.filterType);
+                                        BlacklistListResponse response = new BlacklistListResponse(rows);
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                    }else if ("BLACKLIST_ADD".equals(type)) {          // ← 여기에 새로 추가
+                                        BlacklistAddRequest request = gson.fromJson(msg, BlacklistAddRequest.class);
+                                        blacklistDAO.addBlacklist(request.getTargetType(), request.getValue(), request.getReason());
+                                        System.out.println("[서버] 블랙리스트 등록 - " + request.getTargetType() + ": " + request.getValue());
+
+                                        SessionManager.broadcastToAdmins(new model.DataChangedEvent("BLACKLIST"));
+                                    }
+                                    else if ("BLACKLIST_REMOVE_REQUEST".equals(type)) {
+                                        BlacklistRemoveRequest request = gson.fromJson(msg, BlacklistRemoveRequest.class);
+                                        boolean success = blacklistDAO.delete(request.id);
+                                        ctx.writeAndFlush(gson.toJson(new BlacklistRemoveResult(success)) + "\n");
+
+                                        if (success) {
+                                            SessionManager.broadcastToAdmins(new model.DataChangedEvent("BLACKLIST"));
+                                        }
+                                    }else if ("BLACKLIST_UPDATE_REQUEST".equals(type)) {
+                                        BlacklistUpdateRequest request = gson.fromJson(msg, BlacklistUpdateRequest.class);
+                                        boolean success = blacklistDAO.update(request.id, request.value, request.reason);
+                                        ctx.writeAndFlush(gson.toJson(new BlacklistUpdateResult(success)) + "\n");
+
+                                        if (success) {
+                                            SessionManager.broadcastToAdmins(new model.DataChangedEvent("BLACKLIST"));
+                                        }
+                                    }else if ("PING".equals(type)) {
+                                        // 🔥 하트비트 - 응답 안 해도 됨, 수신 자체가 IdleStateHandler 타이머를 리셋시킴
+                                    }
+
+
+
+
+
 
 
 
                                 }
 
-
+                                // 🔥 여기 새로 추가 - channelActive/channelInactive 근처 아무 데나
+                                @Override
+                                public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+                                    if (evt instanceof IdleStateEvent) {
+                                        System.out.println("[서버] 좀비 세션 감지(15초 무응답), 연결 종료: " + ctx.channel().remoteAddress());
+                                        ctx.close(); // 🔥 이게 channelInactive를 발동시켜서 SessionManager.unregister가 자동 실행됨
+                                    }
+                                }
 
                                 @Override
                                 public void channelActive(ChannelHandlerContext ctx) {

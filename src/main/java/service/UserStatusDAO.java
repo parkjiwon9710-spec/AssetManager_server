@@ -28,6 +28,37 @@ public class UserStatusDAO {
         }
     }
 
+
+    // 로그인 실패 시 카운트 증가 (username 기준 - 인증 전이라 userId를 모름)
+    public void incrementLoginFailCount(String username) {
+        String sql = """
+        UPDATE user_status
+        SET login_fail_count = login_fail_count + 1
+        WHERE user_id = (SELECT id FROM users WHERE username = ?)
+    """;
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, username);
+            ps.executeUpdate();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+
+    // 로그인 성공 시 카운트 리셋
+    public void resetLoginFailCount(int userId) {
+        String sql = "UPDATE user_status SET login_fail_count = 0 WHERE user_id = ?";
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, userId);
+            ps.executeUpdate();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+
     public void updateTradeStats(
             int userId,
             double pnl,
@@ -144,6 +175,35 @@ public class UserStatusDAO {
 
         return false;
     }
+
+    public boolean isOvernightPermitted(int userId) {
+
+        String sql =
+                "SELECT overnight_setting " +
+                        "FROM user_account_status " +
+                        "WHERE user_id = ?";
+
+        try (
+                Connection conn = DBUtil.getConnection();
+                PreparedStatement ps = conn.prepareStatement(sql)
+        ) {
+
+            ps.setInt(1, userId);
+
+            ResultSet rs = ps.executeQuery();
+
+            if (rs.next()) {
+                return rs.getBoolean("overnight_setting");
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        // 없으면 기본 미허용(안전 쪽으로)
+        return false;
+    }
+
 
     public void updateAutoOvernight(
             int userId,

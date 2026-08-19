@@ -38,14 +38,14 @@ public class AdminPositionAggregateService {
         }
         // 🔧 디버깅 - MarketSpecCache에 실제로 뭐가 들어있는지 한 번 찍어봄
         System.out.println("[AdminPositionAggregateService] MarketSpecCache 종목 수: " + marketTypeBySymbol.size());
-        for (Map.Entry<String, String> e : marketTypeBySymbol.entrySet()) {
-            System.out.println("  symbol=" + e.getKey() + " marketType=" + e.getValue());
-        }
+//        for (Map.Entry<String, String> e : marketTypeBySymbol.entrySet()) {
+//            System.out.println("  symbol=" + e.getKey() + " marketType=" + e.getValue());
+//        }
 
         List<AdminPositionRow> positions = new ArrayList<>();
         List<AdminPendingOrderRow> pendingOrders = new ArrayList<>();
 
-        List<AdminUserListRow> customers = adminUserListService.loadCustomers("");
+        List<AdminUserListRow> customers = adminUserListService.loadCustomers("", "전체");
 
         for (AdminUserListRow customer : customers) {
             int userId = customer.getId();

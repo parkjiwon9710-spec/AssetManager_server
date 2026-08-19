@@ -133,7 +133,19 @@ public class OvernightProcessor {
 
                 int userId = entry.getKey();
 
+                if (!userStatusDAO.isOvernightPermitted(userId)) {
 
+                    System.out.println("[OVERNIGHT] 고객별 미허용 user=" + userId);
+
+                    List<Position> userPositions =
+                            positionService.findPositionsBySymbolAndUser(userId, symbol);
+
+                    for (Position p : userPositions) {
+                        forceClosePosition(p);
+                    }
+
+                    continue;
+                }
 
                 if (!userStatusDAO.isAutoOvernight(userId)) {
 
@@ -361,6 +373,27 @@ public class OvernightProcessor {
             return info;
         }
 
+// 🔥 1순위: 관리자가 이 고객 자체를 오버나잇 미허용시켰는지
+        if (!userStatusDAO.isOvernightPermitted(userId)) {
+            info.setPossible(false);
+            info.setPermitted(false);
+            info.setUnavailableReason("오버나잇 사용불가");
+            return info;
+        }
+
+
+        // 🔥 2순위: 시장/종목 단위 오버나잇 허용여부
+        List<Position> allPositions = positionService.getAllPositions(userId);
+
+        boolean anyBlocked = allPositions.stream()
+                .anyMatch(p -> !isOvernightAllowed(p.getSymbol()));
+
+        if (anyBlocked) {
+            info.setPossible(false);
+            info.setPermitted(false);  // 토글도 같이 막고 싶으면
+            info.setUnavailableReason("시스템 : 해당 종목 오버나잇 사용제한");
+            return info;
+        }
 
 
         info.setBalance(
@@ -375,9 +408,8 @@ public class OvernightProcessor {
 
 
         if(positions.isEmpty()){
-
+            info.setUnavailableReason("보유 중인 포지션이 없습니다");
             return info;
-
         }
 
 
@@ -505,9 +537,11 @@ public class OvernightProcessor {
         );
 
 
-        info.setPossible(
-                available >= requiredTotal
-        );
+        boolean possible = available >= requiredTotal;
+        info.setPossible(possible);
+        if (!possible) {
+            info.setUnavailableReason("담보금 부족 (필요: " + requiredTotal + "원, 가능: " + available + "원)");
+        }
 
 
 
