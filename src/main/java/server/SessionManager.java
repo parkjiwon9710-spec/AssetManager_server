@@ -16,6 +16,7 @@ public class SessionManager {
 
     // userId -> 연결
     private static final Map<Integer, ChannelHandlerContext> customerConnections = new ConcurrentHashMap<>();
+    private static final Map<Integer, ChannelHandlerContext> proxyConnections = new ConcurrentHashMap<>(); // 🔥 추가 - 관리자 대리접속 전용, customerConnections와 절대 안 섞임
     private static final Map<Integer, ChannelHandlerContext> adminConnections = new ConcurrentHashMap<>();
 
     // userId -> 세션 정보 (고객만 대상, 관리자는 목록에 안 보여줄 것이므로)
@@ -23,10 +24,26 @@ public class SessionManager {
 
     public static final AttributeKey<Integer> USER_ID_KEY = AttributeKey.valueOf("userId");
     public static final AttributeKey<String> ROLE_KEY = AttributeKey.valueOf("role");
+    public static final AttributeKey<Boolean> IS_PROXY_KEY = AttributeKey.valueOf("isProxy"); // 🔥 추가
 
-    public static void register(int userId, String username, String name, String mac, String role, ChannelHandlerContext ctx) {
+    public static boolean register(int userId, String username, String name, String mac, String role, ChannelHandlerContext ctx) {
+        return register(userId, username, name, mac, role, ctx, false);
+    }
+
+    // 🔥 관리자 대리접속용 오버로드 (isProxy=true면 이중접속 체크 스킵 + 별도 맵에 등록)
+    public static boolean register(int userId, String username, String name, String mac, String role, ChannelHandlerContext ctx, boolean isProxy) {
+
+        if (!"ADMIN".equals(role) && !isProxy) {
+            // 🔥 이중접속 방지: 기존 세션 있으면 새 로그인 거부 (기존 세션은 건드리지 않음)
+            ChannelHandlerContext existing = customerConnections.get(userId);
+            if (existing != null && existing.channel().isActive()) {
+                return false;
+            }
+        }
+
         ctx.channel().attr(USER_ID_KEY).set(userId);
         ctx.channel().attr(ROLE_KEY).set(role);
+        ctx.channel().attr(IS_PROXY_KEY).set(isProxy); // 🔥 추가
 
         String ip = ctx.channel().remoteAddress().toString().replace("/", "").split(":")[0];
 
@@ -34,39 +51,88 @@ public class SessionManager {
             adminConnections.put(userId, ctx);
             System.out.println("[세션] 관리자 등록 - userId: " + userId + ", 현재 관리자 접속자 수: " + adminConnections.size());
             sendSessionListTo(ctx);
+        } else if (isProxy) {
+            // 🔥 대리접속은 별도 맵에만 등록, customerConnections/customerSessionInfo는 절대 건드리지 않음
+            proxyConnections.put(userId, ctx);
+            System.out.println("[세션] 관리자 대리접속 등록 - userId: " + userId + ", 현재 대리접속 수: " + proxyConnections.size());
         } else {
             customerConnections.put(userId, ctx);
             customerSessionInfo.put(userId, new SessionInfo(userId, username, name, ip, mac, System.currentTimeMillis()));
             System.out.println("[세션] 고객 등록 - userId: " + userId + ", 현재 고객 접속자 수: " + customerConnections.size());
             broadcastSessionListToAdmins();
         }
+        return true;
     }
 
     public static void unregister(ChannelHandlerContext ctx) {
         Integer userId = ctx.channel().attr(USER_ID_KEY).get();
         String role = ctx.channel().attr(ROLE_KEY).get();
+        Boolean isProxy = ctx.channel().attr(IS_PROXY_KEY).get(); // 🔥 추가
 
         if (userId == null) return;
 
         if ("ADMIN".equals(role)) {
             adminConnections.remove(userId);
             System.out.println("[세션] 관리자 해제 - userId: " + userId + ", 현재 관리자 접속자 수: " + adminConnections.size());
+        } else if (Boolean.TRUE.equals(isProxy)) {
+            // 🔥 대리접속 종료 - 고객의 진짜 세션(customerConnections)은 절대 건드리지 않음
+            proxyConnections.remove(userId, ctx);
+            System.out.println("[세션] 관리자 대리접속 해제 - userId: " + userId + ", 현재 대리접속 수: " + proxyConnections.size());
         } else {
-            customerConnections.remove(userId);
-            customerSessionInfo.remove(userId);
-            chartSubscriptions.remove(userId);// 🔥 추가 - 연결 끊기면 차트 구독도 정리
-            // 변경 - 연결이 끊기면 카운트 무관하게 완전 제거 (모든 창이 사실상 닫힌 거니까)
+            // 🔥 이 ctx가 현재 맵에 등록된 채널일 때만 제거 (레이스 컨디션 방지)
+            customerConnections.remove(userId, ctx);
+            if (customerConnections.get(userId) == null) {
+                customerSessionInfo.remove(userId);
+            }
+            chartSubscriptions.remove(userId);
             for (Map<Integer, Integer> counts : symbolSubscriberCounts.values()) {
                 counts.remove(userId);
             }
-
             System.out.println("[세션] 고객 해제 - userId: " + userId + ", 현재 고객 접속자 수: " + customerConnections.size());
             broadcastSessionListToAdmins();
         }
     }
 
+
+
+
+    private static final Map<String, ProxyTokenInfo> proxyTokens = new ConcurrentHashMap<>();
+
+    private static class ProxyTokenInfo {
+        int userId;
+        long expiresAt;
+        ProxyTokenInfo(int userId, long expiresAt) {
+            this.userId = userId;
+            this.expiresAt = expiresAt;
+        }
+    }
+
+    public static String issueProxyToken(int customerUserId) {
+        String token = java.util.UUID.randomUUID().toString();
+        proxyTokens.put(token, new ProxyTokenInfo(customerUserId, System.currentTimeMillis() + 30_000));
+        return token;
+    }
+
+    public static Integer consumeProxyToken(String token) {
+        ProxyTokenInfo info = proxyTokens.remove(token);
+        if (info == null || info.expiresAt < System.currentTimeMillis()) return null;
+        return info.userId;
+    }
+
+
+
     public static ChannelHandlerContext getCustomer(int userId) {
         return customerConnections.get(userId);
+    }
+
+    // 🔥 새 헬퍼 - 실제 고객 세션 + 관리자 대리접속 세션 둘 다 반환 (push용)
+    private static List<ChannelHandlerContext> getAllContextsForUser(int userId) {
+        List<ChannelHandlerContext> list = new java.util.ArrayList<>();
+        ChannelHandlerContext real = customerConnections.get(userId);
+        if (real != null) list.add(real);
+        ChannelHandlerContext proxy = proxyConnections.get(userId);
+        if (proxy != null) list.add(proxy);
+        return list;
     }
 
     // 현재 접속중인 고객 목록을 모든 관리자에게 전송    무조건 "고객 접속자 리스트"만 포장해서 보내는 전용 메서드
@@ -79,7 +145,7 @@ public class SessionManager {
             adminCtx.writeAndFlush(json + "\n");
         }
     }
-// 접속중인 관리자 전원한테 전송       뭘 보낼지 호출하는 쪽이 정하는 범용 배달 메서드 (실시간손익, 입출금목록 등 다 이거 재사용)
+    // 접속중인 관리자 전원한테 전송       뭘 보낼지 호출하는 쪽이 정하는 범용 배달 메서드 (실시간손익, 입출금목록 등 다 이거 재사용)
     public static void broadcastToAdmins(Object message) {
         String json = gson.toJson(message);
         for (ChannelHandlerContext adminCtx : adminConnections.values()) {
@@ -93,21 +159,26 @@ public class SessionManager {
             ctx.writeAndFlush(json + "\n");
         }
     }
-/// ///////////////////////////////주문창 맨 위 리프레쉬용도 담보금같은거////////////
+    /// ///////////////////////////////주문창 맨 위 리프레쉬용도 담보금같은거////////////
 //접속중인 유저들
     public static java.util.Set<Integer> getConnectedCustomerIds() {
-        return customerConnections.keySet();
+        // 🔥 정기 스케줄러(TopInfo, PositionPanel 등)가 대리접속만 있는 유저도 챙기도록 합침
+        java.util.Set<Integer> all = new java.util.HashSet<>(customerConnections.keySet());
+        all.addAll(proxyConnections.keySet());
+        return all;
     }
-//특정고객한명에게 임의메세지를 보내는 범용메서드
+    //특정고객한명에게 임의메세지를 보내는 범용메서드
     public static void sendToCustomer(int userId, Object message) {
-        ChannelHandlerContext ctx = customerConnections.get(userId);
-        if (ctx != null) {
-            ctx.writeAndFlush(gson.toJson(message) + "\n");
+        String json = gson.toJson(message);
+        List<ChannelHandlerContext> targets = getAllContextsForUser(userId);
+        System.out.println("[DEBUG] sendToCustomer userId=" + userId + ", 대상 채널 수=" + targets.size());
+        for (ChannelHandlerContext ctx : getAllContextsForUser(userId)) { // 🔥 수정 - 실제세션 + 대리접속 둘 다
+            ctx.writeAndFlush(json + "\n");
         }
     }
     /// //////////////////////////////////////////
 
-/// //////////////////////////////
+    /// //////////////////////////////
     public static void sendSessionListTo(ChannelHandlerContext ctx) {
         List<SessionInfo> list = customerSessionInfo.values().stream().collect(Collectors.toList());
         SessionListMessage message = new SessionListMessage(list);
@@ -115,9 +186,9 @@ public class SessionManager {
     }
 
     public static void sendEventToCustomer(int userId, ClientEventMessage event) {
-        ChannelHandlerContext ctx = customerConnections.get(userId);
-        if (ctx != null) {
-            ctx.writeAndFlush(new Gson().toJson(event) + "\n");
+        String json = new Gson().toJson(event);
+        for (ChannelHandlerContext ctx : getAllContextsForUser(userId)) { // 🔥 수정
+            ctx.writeAndFlush(json + "\n");
         }
     }
 /// //////////////////////////////////
@@ -172,8 +243,7 @@ public class SessionManager {
         System.out.println("[서버] " + symbol + " 구독자 " + counts.size() + "명에게 전송");
         String json = new Gson().toJson(message);
         for (Integer userId : counts.keySet()) {
-            ChannelHandlerContext ctx = customerConnections.get(userId);
-            if (ctx != null) {
+            for (ChannelHandlerContext ctx : getAllContextsForUser(userId)) { // 🔥 수정
                 ctx.writeAndFlush(json + "\n");
             }
         }

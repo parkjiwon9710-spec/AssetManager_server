@@ -79,12 +79,12 @@ public class OvernightScheduler {
         long delay =
                 Duration.between(now, next).toMillis();
 
-        System.out.println(
-                "[SCHEDULER] "
-                        + symbol
-                        + " 예약 "
-                        + next
-        );
+//        System.out.println(
+//                "[SCHEDULER] "
+//                        + symbol
+//                        + " 예약 "
+//                        + next
+//        );
 
         ScheduledFuture<?> future =
                 scheduler.schedule(() -> {

@@ -10,7 +10,30 @@ import java.util.List;
 
 public class UserDAO {
 
+    public User findByUsername(String username) {
+        String sql = "SELECT * FROM users WHERE username=?";
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
 
+            stmt.setString(1, username);
+            ResultSet rs = stmt.executeQuery();
+
+            if (rs.next()) {
+                User user = new User();
+                user.setId(rs.getInt("id"));
+                user.setUsername(rs.getString("username"));
+                user.setPassword(rs.getString("password"));
+                user.setBalance(rs.getInt("balance"));
+                user.setRole(rs.getString("role"));
+                user.setName(rs.getString("name"));
+                return user;
+            }
+
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
 
     public User getUserById(int userId) {
         String sql = "SELECT * FROM users WHERE id=?";

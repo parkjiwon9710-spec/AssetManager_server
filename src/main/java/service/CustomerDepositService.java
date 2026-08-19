@@ -1,10 +1,7 @@
 
 package service;
 
-import model.DwAccountInfo;
-import model.DwBalanceUpdate;
-import model.Position;
-import model.User;
+import model.*;
 import server.SessionManager;
 import service.UserDataDAO;
 import db.DBUtil;
@@ -137,6 +134,36 @@ public class CustomerDepositService {
         if (user != null) {
             SessionManager.sendToCustomer(userId, new DwBalanceUpdate(user.getBalance()));
         }
+    }
+
+    public void pushAccountInfoToUser(int userId) {
+        System.out.println("[DEBUG] pushAccountInfoToUser 호출됨, userId=" + userId);
+
+        DwAccountInfo info = loadAccountInfo(userId);
+
+        System.out.println(
+                "[DEBUG] loadAccountInfo 결과: " +
+                        "bank=" + info.getBank() +
+                        ", accountNumber=" + info.getAccountNumber() +
+                        ", accountHolder=" + info.getAccountHolder() +
+                        ", alias=" + info.getAlias()
+        );
+
+        DwAccountInfoUpdate update = new DwAccountInfoUpdate();
+        update.setBank(info.getBank());
+        update.setAccountNumber(info.getAccountNumber());
+        update.setAccountHolder(info.getAccountHolder());
+        update.setAlias(info.getAlias());
+
+        System.out.println(
+                "[DEBUG] push할 계좌정보: " +
+                        "bank=" + update.getBank() +
+                        ", accountNumber=" + update.getAccountNumber() +
+                        ", accountHolder=" + update.getAccountHolder() +
+                        ", alias=" + update.getAlias()
+        );
+
+        SessionManager.sendToCustomer(userId, update);
     }
 
 

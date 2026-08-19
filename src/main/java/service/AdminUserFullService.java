@@ -452,7 +452,11 @@ public class AdminUserFullService {
                 }
             }
 
+
+
+
             conn.commit();
+            new service.CustomerDepositService().pushAccountInfoToUser(userId);
             return null; // 성공
 
         } catch (SQLException | NumberFormatException e) {
