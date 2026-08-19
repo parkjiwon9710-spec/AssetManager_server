@@ -22,6 +22,20 @@ import java.util.*;
 
 public class DemoServer {
 
+
+
+
+    private static final Map<String, MarketContext> marketContexts = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Map<String, Market.MarketSimulator> marketSimulators = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Map<String, Double> prevPrices = new java.util.concurrent.ConcurrentHashMap<>();
+
+
+
+    // 🔥 실시간 API로 전환된 심볼 목록 (여기 들어있으면 시뮬레이터 tick 안 돌림)
+    private static final Set<String> realtimeSymbols = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+
+
     private static final Gson gson = new GsonBuilder()
             .registerTypeAdapter(LocalTime.class, (JsonSerializer<LocalTime>) (src, typeOfSrc, context) ->
                     new JsonPrimitive(src.toString()))
@@ -82,13 +96,39 @@ public class DemoServer {
         Market.MarketSpecCache.load();
         Store.ExchangeRateCache.load();
 
+        //실제 api붙인 종목들을 추가 그래야 시뮬레이터에서 제외
+        // 🔥 HSI 실시간 웹소켓 연결
+        realtimeSymbols.add("HSI");
 
-// 🔥 새 코드 - 모든 종목 등록
-        Map<String, MarketContext> marketContexts = new java.util.concurrent.ConcurrentHashMap<>();
-        Map<String, Market.MarketSimulator> marketSimulators = new java.util.concurrent.ConcurrentHashMap<>();
-        Map<String, Double> prevPrices = new java.util.concurrent.ConcurrentHashMap<>();
+        String lsAccessToken;
+        try {
+            lsAccessToken = ls.LSAuth.getAccessToken();
+        } catch (Exception e) {
+            System.err.println("[LS] 토큰 발급 실패 - HSI 실시간 연동 스킵");
+            e.printStackTrace();
+            lsAccessToken = null;
+        }
 
-        for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
+        if (lsAccessToken != null) {
+            Market.QuoteUpdateListener hsiListener = (internalSymbol, result) -> {
+                Market.MarketContext ctx = marketContexts.get(internalSymbol);
+                if (ctx == null) return;
+
+                ctx.setSnapshot(result.snapshot);
+                Store.PriceStore.updateBidAsk(internalSymbol, result.bestBid, result.bestAsk);
+                Store.PriceStore.updateLast(internalSymbol, result.midPrice);
+
+                applyPriceUpdate(internalSymbol, result.midPrice, result.bestBid, result.bestAsk);
+            };
+
+            ls.LSMarketDataConnector.connect(lsAccessToken, "HSIU26", "HSI", hsiListener);
+        }
+
+
+
+
+
+for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
             String symbol = spec.getSymbol();
             Market.MarketContext ctx = new Market.MarketContext(spec);
             Market.MarketSimulator sim = new Market.MarketSimulator(ctx);
@@ -100,12 +140,11 @@ public class DemoServer {
 
 
 
-
         java.util.concurrent.Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
 
             for (String symbol : marketSimulators.keySet()) {
 
-                double prevPrice = prevPrices.get(symbol);
+                if (realtimeSymbols.contains(symbol)) continue;   // 🔥 실시간 심볼은 시뮬레이터 tick 제외
 
                 marketSimulators.get(symbol).tick();
 
@@ -113,22 +152,12 @@ public class DemoServer {
                 double bestBid = Store.PriceStore.getBestBid(symbol);
                 double bestAsk = Store.PriceStore.getBestAsk(symbol);
 
-                orderExecutionService.checkLiquidation(symbol, currentPrice);
-                orderExecutionService.checkTpSl(symbol, prevPrice, currentPrice);
-                orderExecutionService.processPendingOrders(symbol, prevPrice, currentPrice, bestBid, bestAsk);
-
-                Market.OrderBookSnapshot snapshot = marketContexts.get(symbol).getSnapshot();
-                if (snapshot != null) {
-                    PriceUpdateMessage update = new PriceUpdateMessage(
-                            symbol, currentPrice, bestBid, bestAsk, snapshot.getAsks(), snapshot.getBids()
-                    );
-                    SessionManager.broadcastToSubscribers(symbol, update);
-                }
-
-                prevPrices.put(symbol, currentPrice);
+                applyPriceUpdate(symbol, currentPrice, bestBid, bestAsk);
             }
 
         }, 0, 300, java.util.concurrent.TimeUnit.MILLISECONDS);
+
+
 
         // 🔥 체결(Trade) 시뮬레이터 - 시장에 공개된 체결 tape을 흉내냄
 // 유저 주문과 완전히 무관, 나중에 실제 증권사 API 수신으로 교체될 부분
@@ -1743,6 +1772,37 @@ public class DemoServer {
             workerGroup.shutdownGracefully();
         }
     }
+
+
+
+
+
+
+
+
+    // 🔥 가격/호가 갱신을 반영하고 클라이언트에 broadcast하는 공통 로직
+// 스케줄러(시뮬레이터)와 실시간 API 콜백(웹소켓) 양쪽에서 재사용
+    private static void applyPriceUpdate(String symbol, double currentPrice, double bestBid, double bestAsk) {
+
+        double prevPrice = prevPrices.getOrDefault(symbol, currentPrice);
+
+        orderExecutionService.checkLiquidation(symbol, currentPrice);
+        orderExecutionService.checkTpSl(symbol, prevPrice, currentPrice);
+        orderExecutionService.processPendingOrders(symbol, prevPrice, currentPrice, bestBid, bestAsk);
+
+        Market.OrderBookSnapshot snapshot = marketContexts.get(symbol).getSnapshot();
+        if (snapshot != null) {
+            PriceUpdateMessage update = new PriceUpdateMessage(
+                    symbol, currentPrice, bestBid, bestAsk, snapshot.getAsks(), snapshot.getBids()
+            );
+            SessionManager.broadcastToSubscribers(symbol, update);
+        }
+
+        prevPrices.put(symbol, currentPrice);
+    }
+
+
+
 
 
     // 🔥 관리자 개별/전체청산에서 공용으로 쓰는 청산 헬퍼
