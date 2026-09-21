@@ -20,12 +20,13 @@ public class OrderService {
 
         if (executionPrice <= 0) return false;
 
-        // 서버 ORDER_REQUEST 핸들러가 쓰는 것과 동일한 executeMarket 시그니처 재사용
+        java.time.LocalDateTime signalTime = java.time.LocalDateTime.now().withNano(0);   // 🔥 추가
+
         int orderId = executionService.executeMarket(
                 userId, symbol, side, qty, executionPrice,
-                false, 0, false, 0
+                false, 0, false, 0,
+                signalTime   // 🔥 추가
         );
-
         return orderId > 0;
     }
 

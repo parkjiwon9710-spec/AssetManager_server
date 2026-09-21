@@ -89,6 +89,8 @@ public class DemoServer {
 
     private static final service.AdminUserBulkEditService adminUserBulkEditService = new AdminUserBulkEditService();
 
+    private static final service.LoginHistoryDAO loginHistoryDAO = new service.LoginHistoryDAO();
+
 
     public static void main(String[] args) throws InterruptedException {
 
@@ -101,9 +103,23 @@ public class DemoServer {
         Market.MarketSpecCache.load();
         Store.ExchangeRateCache.load();
 
+
+        service.ExchangeRateDAO exchangeRateDAO = new service.ExchangeRateDAO();
+        service.ExchangeRateSyncService exchangeRateSyncService = new service.ExchangeRateSyncService(exchangeRateDAO);
+        exchangeRateSyncService.syncOnStartup();
+
+
+
+
         //실제 api붙인 종목들을 추가 그래야 시뮬레이터에서 제외
         // 🔥 HSI 실시간 웹소켓 연결
         realtimeSymbols.add("HSI");
+
+
+
+
+
+
 
         String lsAccessToken;
         try {
@@ -114,20 +130,96 @@ public class DemoServer {
             lsAccessToken = null;
         }
 
+
         if (lsAccessToken != null) {
-            Market.QuoteUpdateListener hsiListener = (internalSymbol, result) -> {
+            RolloverService.checkAll(lsAccessToken, realtimeSymbols, marketSpecDAO);
+        }
+
+
+
+
+
+        if (lsAccessToken != null) {
+            // 🔥 OVH(호가) 콜백 - 이제 bestBid/bestAsk만 갱신, updateLast는 더 이상 여기서 안 함
+            Market.QuoteUpdateListener hsiQuoteListener = (internalSymbol, result) -> {
                 Market.MarketContext ctx = marketContexts.get(internalSymbol);
                 if (ctx == null) return;
 
                 ctx.setSnapshot(result.snapshot);
                 Store.PriceStore.updateBidAsk(internalSymbol, result.bestBid, result.bestAsk);
-                Store.PriceStore.updateLast(internalSymbol, result.midPrice);
 
-                applyPriceUpdate(internalSymbol, result.midPrice, result.bestBid, result.bestAsk);
+                // 🔥 실제 체결가는 아직 안 들어왔을 수 있으니, 마지막 알려진 가격으로 applyPriceUpdate만 다시 브로드캐스트
+                double lastKnownPrice = Store.PriceStore.getLast(internalSymbol);
+                if (lastKnownPrice > 0) {
+                    applyQuoteUpdate(internalSymbol, lastKnownPrice, result.bestBid, result.bestAsk);   // 🔥 변경
+
+                }
             };
 
-            ls.LSMarketDataConnector.connect(lsAccessToken, "HSIU26", "HSI", hsiListener);
+            // 🔥 OVC(체결) 콜백 - 신규. 실제 체결가/체결수량으로 진짜 tape을 만듦
+            Market.TradeUpdateListener hsiTradeListener = (internalSymbol, result) -> {
+                Store.PriceStore.updateLast(internalSymbol, result.price);
+
+                double bestBid = Store.PriceStore.getBestBid(internalSymbol);
+                double bestAsk = Store.PriceStore.getBestAsk(internalSymbol);
+                applyTradeUpdate(internalSymbol, result.price, bestBid, bestAsk);   // 🔥 변경
+
+
+                // 🔥 실제 체결 tape 브로드캐스트 (랜덤 시뮬레이터 대체)
+                TradeUpdateMessage tradeUpdate = new TradeUpdateMessage(
+                        internalSymbol, result.price, result.qty, java.time.LocalTime.now().withNano(0).toString()
+                );
+                SessionManager.broadcastToSubscribers(internalSymbol, tradeUpdate);
+            };
+
+            String hsiTrKey = Market.MarketSpecCache.get("HSI").getContractCode();   // 🔥 하드코딩 제거
+            ls.LSMarketDataConnector.connect(lsAccessToken, hsiTrKey, "HSI", hsiQuoteListener, hsiTradeListener);
         }
+
+
+
+        if (lsAccessToken != null) {
+            String finalToken = lsAccessToken;   // 람다 안에서 쓰려면 effectively final 필요
+
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(() -> {
+                try {
+                    String currentTrKey = Market.MarketSpecCache.get("HSI").getContractCode();   // 🔥 매번 최신값 조회 (하드코딩 제거)
+                    ls.LSSymbolInfoClient.Result info = ls.LSSymbolInfoClient.getSymbolInfo(finalToken, currentTrKey);
+
+                    System.out.println("[o3105] HSI - last=" + info.trdP + ", prevClose=" + info.closeP
+                            + ", open=" + info.openP + ", high=" + info.highP + ", low=" + info.lowP);   // 🔥 추가
+
+
+                    // DemoServer 스케줄러 안, 메시지 만들기 전에
+                    Store.PriceStore.initDailyPrice("HSI", info.closeP);  // 전일종가 갱신(매초 덮어써도 무해 - 어차피 하루종일 같은 값)
+                    Store.PriceStore.setExpiry("HSI", info.mtrtDt);        // 🔥 서버 PriceStore에도 expiryMap 추가 필요 (클라이언트와 동일 패턴)
+// 🔥 이 블록이 실제로 들어가 있는지 확인해주세요
+                    String currentDbExpiry = Market.MarketSpecCache.get("HSI").getExpiryDate() == null
+                            ? "" : Market.MarketSpecCache.get("HSI").getExpiryDate().toString();
+                    String newExpiryFormatted = info.mtrtDt.substring(0,4) + "-" + info.mtrtDt.substring(4,6) + "-" + info.mtrtDt.substring(6,8);
+
+                    if (!newExpiryFormatted.equals(currentDbExpiry)) {
+                        marketSpecDAO.updateContractCodeAndExpiry(
+                                "HSI", currentTrKey, java.time.LocalDate.parse(newExpiryFormatted)
+                        );
+                        System.out.println("[LS] HSI 만기일 DB 반영: " + currentDbExpiry + " → " + newExpiryFormatted);
+                    }
+
+
+
+                    SymbolInfoUpdateMessage msg = new SymbolInfoUpdateMessage(
+                            "HSI", info.trdP, info.closeP, info.openP, info.highP, info.lowP, info.mtrtDt
+                    );
+                    SessionManager.broadcastToSubscribers("HSI", msg);
+
+                } catch (Exception e) {
+                    System.err.println("[o3105] 폴링 실패");
+                    e.printStackTrace();
+                }
+            }, 0, 1000, java.util.concurrent.TimeUnit.MILLISECONDS);   // 🔥 1초 간격 (한도 2회/초 대비 여유)
+        }
+
+
 
 
 
@@ -157,7 +249,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                 double bestBid = Store.PriceStore.getBestBid(symbol);
                 double bestAsk = Store.PriceStore.getBestAsk(symbol);
 
-                applyPriceUpdate(symbol, currentPrice, bestBid, bestAsk);
+                applyTradeUpdate(symbol, currentPrice, bestBid, bestAsk);   // 🔥 변경
+
             }
 
         }, 0, 300, java.util.concurrent.TimeUnit.MILLISECONDS);
@@ -170,6 +263,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
             for (String symbol : marketSimulators.keySet()) {
 
+                if (realtimeSymbols.contains(symbol)) continue;   // 🔥 추가 — 실시간 심볼은 가짜 체결 tape 제외
+                
                 double lastPrice = Store.PriceStore.getLast(symbol);
                 if (lastPrice <= 0) continue;
 
@@ -325,6 +420,9 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                                 return;
                                             }
 
+                                            if (!"ADMIN".equals(user.getRole())) {   // 🔥 추가 - 고객 로그인만 기록
+                                                loginHistoryDAO.insert(user.getId(), user.getUsername(), user.getName(), ip, mac, "LOGIN");
+                                            }
                                             System.out.println("[서버] 로그인 성공 - userId: " + user.getId());
 
                                         } else {
@@ -335,6 +433,17 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
 
+                                    }else if ("LOGIN_HISTORY_REQUEST".equals(type)) {
+                                        new Thread(() -> {
+                                            LoginHistoryRequest request = gson.fromJson(msg, LoginHistoryRequest.class);
+                                            List<model.LoginHistoryRow> rows = loginHistoryDAO.loadHistory(
+                                                    new Timestamp(request.getStartMillis()),
+                                                    new Timestamp(request.getEndMillis()),
+                                                    request.getKeyword()
+                                            );
+                                            LoginHistoryResponse response = new LoginHistoryResponse(rows);
+                                            ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                        }).start();
                                     }
                                     else if ("ADMIN_PROXY_TOKEN_REQUEST".equals(type)) {
                                         AdminProxyTokenRequest request = gson.fromJson(msg, AdminProxyTokenRequest.class);
@@ -428,12 +537,46 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
 
 
+                                        // 🔥 오버나잇 처리 중인 종목이면 주문 거부
+                                        if (service.MarketSessionManager.isSymbolLocked(request.getSymbol())) {
+                                            OrderResponse rejectResponse = new OrderResponse(false, "오버나잇 처리 중입니다. 잠시 후 다시 시도해주세요.", -1);
+                                            ctx.writeAndFlush(gson.toJson(rejectResponse) + "\n");
 
+                                            model.OrderAuditLog rejectLog = new model.OrderAuditLog();
+                                            rejectLog.time = java.time.LocalDateTime.now().withNano(0);
+                                            rejectLog.eventType = "오버나잇 처리중 주문 거부";
+                                            rejectLog.userId = request.getUserId();
+                                            rejectLog.exchange = service.OrderAuditDAO.resolveExchange(request.getSymbol());
+                                            rejectLog.server = "거부";
+                                            rejectLog.symbol = request.getSymbol();
+                                            rejectLog.orderPrice = request.getPrice();
+                                            rejectLog.side = request.getSide();
+                                            rejectLog.qty = request.getQty();
+                                            new service.OrderAuditDAO().insertLog(rejectLog);
+
+                                            System.out.println("[서버] 오버나잇 처리중 - 주문 거부 - userId: " + request.getUserId() + ", symbol: " + request.getSymbol());
+                                            return;
+                                        }
 /// //////////////////////////장운영시간 체크 ////////////////
                                         Market.MarketPhase phase = Market.MarketSpecCache.getPhase(request.getSymbol());
                                         if (phase == Market.MarketPhase.CLOSED) {
                                             OrderResponse rejectResponse = new OrderResponse(false, "장 운영시간이 아닙니다.", -1);
                                             ctx.writeAndFlush(gson.toJson(rejectResponse) + "\n");
+
+                                            // 🔥 거부 로그 추가
+                                            model.OrderAuditLog rejectLog = new model.OrderAuditLog();
+                                            rejectLog.time = java.time.LocalDateTime.now().withNano(0);
+                                            rejectLog.eventType = "장마감으로 주문 거부";
+                                            rejectLog.userId = request.getUserId();
+                                            rejectLog.exchange = service.OrderAuditDAO.resolveExchange(request.getSymbol());
+                                            rejectLog.server = "거부";
+                                            rejectLog.symbol = request.getSymbol();
+                                            rejectLog.orderPrice = request.getPrice();
+                                            rejectLog.side = request.getSide();
+                                            rejectLog.qty = request.getQty();
+                                            new service.OrderAuditDAO().insertLog(rejectLog);
+
+
                                             System.out.println("[서버] 장마감으로 주문 거부 - userId: " + request.getUserId() + ", symbol: " + request.getSymbol());
                                             return;
                                         }
@@ -448,13 +591,36 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                         if (!allowed) {
                                             OrderResponse rejectResponse = new OrderResponse(false, "주문 가능 수량을 초과했습니다.", -1);
                                             ctx.writeAndFlush(gson.toJson(rejectResponse) + "\n");
+
+                                            // 🔥 거부 로그
+                                            model.OrderAuditLog rejectLog = new model.OrderAuditLog();
+                                            rejectLog.time = java.time.LocalDateTime.now().withNano(0);
+                                            rejectLog.eventType = "주문가능수량 초과 거부(서버에서 거부)";
+                                            rejectLog.userId = request.getUserId();
+                                            rejectLog.exchange = service.OrderAuditDAO.resolveExchange(request.getSymbol());
+                                            rejectLog.server = "거부";
+                                            rejectLog.symbol = request.getSymbol();
+                                            rejectLog.orderPrice = request.getPrice();
+                                            rejectLog.side = side.name();
+                                            rejectLog.qty = request.getQty();
+                                            new service.OrderAuditDAO().insertLog(rejectLog);
+
+
                                             System.out.println("[서버] 리스크 체크 거부 - userId: " + request.getUserId());
                                             return;
                                         }
                                         /// /////////////////////////////////////
+                                        java.time.LocalDateTime signalTime = java.time.LocalDateTime.now().withNano(0);   // 🔥 요청 처리 확정 시점 = 진짜 신호 시각
+
+                                        // 🔥 신호가도 서버가 직접 조회 (클라이언트가 보낸 request.getPrice() 대신)
+                                        double orderPrice = side == model.OrderSide.BUY
+                                                ? Store.PriceStore.getBestAsk(request.getSymbol())
+                                                : Store.PriceStore.getBestBid(request.getSymbol());
+
                                         int orderId = orderExecutionService.executeMarket(
-                                                request.getUserId(), request.getSymbol(), side, request.getQty(), request.getPrice(),
-                                                request.isTpEnabled(), request.getTpTicks(), request.isSlEnabled(), request.getSlTicks()
+                                                request.getUserId(), request.getSymbol(), side, request.getQty(), orderPrice,   // 🔥 request.getPrice() → orderPrice
+                                                request.isTpEnabled(), request.getTpTicks(), request.isSlEnabled(), request.getSlTicks(),
+                                                signalTime
                                         );
                                         OrderResponse response;
                                         if (orderId > 0) {
@@ -470,11 +636,50 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                         OrderPendingRequest request = gson.fromJson(msg, OrderPendingRequest.class);
 
 
+
+                                        // 🔥 오버나잇 처리 중인 종목이면 예약주문 등록 거부
+                                        if (service.MarketSessionManager.isSymbolLocked(request.getSymbol())) {
+                                            OrderResponse rejectResponse = new OrderResponse(false, "오버나잇 처리 중입니다. 잠시 후 다시 시도해주세요.", -1);
+                                            ctx.writeAndFlush(gson.toJson(rejectResponse) + "\n");
+
+                                            model.OrderAuditLog rejectLog = new model.OrderAuditLog();
+                                            rejectLog.time = java.time.LocalDateTime.now().withNano(0);
+                                            rejectLog.eventType = "오버나잇 처리중 예약주문 거부";
+                                            rejectLog.userId = request.getUserId();
+                                            rejectLog.exchange = service.OrderAuditDAO.resolveExchange(request.getSymbol());
+                                            rejectLog.server = "거부";
+                                            rejectLog.symbol = request.getSymbol();
+                                            rejectLog.orderPrice = request.getPrice();
+                                            rejectLog.side = request.getSide();
+                                            rejectLog.qty = request.getQty();
+                                            new service.OrderAuditDAO().insertLog(rejectLog);
+
+                                            System.out.println("[서버] 오버나잇 처리중 - 예약주문 거부 - userId: " + request.getUserId() + ", symbol: " + request.getSymbol());
+                                            return;
+                                        }
+
+
                                         /// ////////장운영시간체크///////
                                         Market.MarketPhase phase = Market.MarketSpecCache.getPhase(request.getSymbol());
                                         if (phase == Market.MarketPhase.CLOSED) {
                                             OrderResponse rejectResponse = new OrderResponse(false, "장 운영시간이 아닙니다.", -1);
                                             ctx.writeAndFlush(gson.toJson(rejectResponse) + "\n");
+
+
+                                            // 🔥 거부 로그 추가
+                                            model.OrderAuditLog rejectLog = new model.OrderAuditLog();
+                                            rejectLog.time = java.time.LocalDateTime.now().withNano(0);
+                                            rejectLog.eventType = "장마감으로 주문 거부";
+                                            rejectLog.userId = request.getUserId();
+                                            rejectLog.exchange = service.OrderAuditDAO.resolveExchange(request.getSymbol());
+                                            rejectLog.server = "거부";
+                                            rejectLog.symbol = request.getSymbol();
+                                            rejectLog.orderPrice = request.getPrice();
+                                            rejectLog.side = request.getSide();
+                                            rejectLog.qty = request.getQty();
+                                            new service.OrderAuditDAO().insertLog(rejectLog);
+
+
                                             System.out.println("[서버] 장마감으로 예약주문 거부 - userId: " + request.getUserId() + ", symbol: " + request.getSymbol());
                                             return;
                                         }
@@ -489,16 +694,25 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                         if (!allowed) {
                                             response = new OrderResponse(false, "주문 가능 수량을 초과했습니다.", -1);
+
+                                            // 🔥 거부 로그
+                                            model.OrderAuditLog rejectLog = new model.OrderAuditLog();
+                                            rejectLog.time = java.time.LocalDateTime.now().withNano(0);
+                                            rejectLog.eventType = "주문가능수량 초과 거부(미체결)";
+                                            rejectLog.userId = request.getUserId();
+                                            rejectLog.exchange = service.OrderAuditDAO.resolveExchange(request.getSymbol());
+                                            rejectLog.server = "거부";
+                                            rejectLog.symbol = request.getSymbol();
+                                            rejectLog.orderPrice = request.getPrice();
+                                            rejectLog.side = side.name();
+                                            rejectLog.qty = request.getQty();
+                                            new service.OrderAuditDAO().insertLog(rejectLog);
+
                                             System.out.println("[서버] 대기주문 리스크 거부 - userId: " + request.getUserId());
                                         } else {
                                             int orderId = orderDAO.insertPending(
-                                                    request.getUserId(),
-                                                    request.getSymbol(),
-                                                    request.getSide(),
-                                                    request.getOrderType(),
-                                                    request.getPrice(),
-                                                    request.getTriggerPrice(),
-                                                    request.getQty()
+                                                    request.getUserId(), request.getSymbol(), request.getSide(),
+                                                    request.getOrderType(), request.getPrice(), request.getTriggerPrice(), request.getQty()
                                             );
 
                                             if (orderId > 0) {
@@ -509,6 +723,44 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                                 );
                                                 SessionManager.sendEventToCustomer(request.getUserId(), pendingEvent);
 
+                                                String sideKor = "BUY".equals(request.getSide()) ? "매수" : "매도";
+
+
+                                                // 🔥 LIMIT일 때만 여기서 "신호" 로그를 남김 (등록=신호이므로)
+                                                if ("LIMIT".equals(request.getOrderType())) {
+                                                    String symbolKor = service.UserDataDAO.symbolToKor(request.getSymbol());
+
+                                                    model.OrderAuditLog signalLog = new model.OrderAuditLog();
+                                                    signalLog.time = java.time.LocalDateTime.now().withNano(0);
+                                                    signalLog.eventType = "지정가 " + sideKor;
+                                                    signalLog.userId = request.getUserId();
+                                                    signalLog.exchange = service.OrderAuditDAO.resolveExchange(request.getSymbol());
+                                                    signalLog.server = "신호";
+                                                    signalLog.orderId = String.valueOf(orderId);
+                                                    signalLog.symbol = request.getSymbol();
+                                                    signalLog.orderPrice = request.getPrice();
+                                                    signalLog.side = request.getSide();
+                                                    signalLog.qty = request.getQty();
+                                                    signalLog.openOrderSnapshot = service.OrderAuditDAO.buildOpenOrderSnapshot(request.getUserId());   // 🔥 변경
+                                                    new service.OrderAuditDAO().insertLog(signalLog);
+                                                } else {
+                                                    // 🔥 MIT - 예약 로그
+                                                    model.OrderAuditLog reserveLog = new model.OrderAuditLog();
+                                                    reserveLog.time = java.time.LocalDateTime.now().withNano(0);
+                                                    reserveLog.eventType = "MIT예약주문 " + sideKor + " (trigger:" + request.getTriggerPrice() + ")";
+                                                    reserveLog.userId = request.getUserId();
+                                                    reserveLog.exchange = service.OrderAuditDAO.resolveExchange(request.getSymbol());
+                                                    reserveLog.server = "예약";
+                                                    reserveLog.orderId = String.valueOf(orderId);
+                                                    reserveLog.symbol = request.getSymbol();
+                                                    reserveLog.side = request.getSide();
+                                                    reserveLog.qty = request.getQty();
+                                                    new service.OrderAuditDAO().insertLog(reserveLog);
+                                                }
+
+
+
+
                                                 response = new OrderResponse(true, "미체결 주문 등록 완료", orderId);
                                                 System.out.println("[서버] 미체결 주문 등록 성공 - orderId: " + orderId);
                                             } else {
@@ -518,28 +770,109 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
                                     } else if ("ORDER_CANCEL_REQUEST".equals(type)) {
-                                        OrderCancelRequest request = gson.fromJson(msg, OrderCancelRequest.class);
+                                                     OrderCancelRequest request = gson.fromJson(msg, OrderCancelRequest.class);
 
-                                        String symbol = orderDAO.getSymbolByOrderId(request.getOrderId());  // 🔥 취소 전에 먼저 조회
+                                                     model.Order o = orderDAO.findById(request.getOrderId());
+                                                     String symbol = o != null ? o.getSymbol() : null;
 
-                                        orderDAO.cancelPendingById(request.getOrderId());
+                                                     boolean cancelled = orderDAO.cancelPendingById(request.getOrderId());   // 🔥 취소 먼저, 결과 확인
 
-                                        // 🔥 여기에 취소 성공 시 추가 (symbol 정보가 없으니 null로)
-                                        ClientEventMessage cancelEvent = new ClientEventMessage("PENDING_ORDER_CHANGED",symbol, "ORDER_CANCELLED");
-                                        SessionManager.sendEventToCustomer(request.getUserId(), cancelEvent);
+                                                     OrderResponse response;
+                                                     if (cancelled) {
+                                                         service.OrderAuditDAO.logCancel(o);   // 🔥 취소 성공한 뒤에 로그
 
-                                        OrderResponse response = new OrderResponse(true, "취소 완료", request.getOrderId());
+                                                         ClientEventMessage cancelEvent = new ClientEventMessage("PENDING_ORDER_CHANGED", symbol, "ORDER_CANCELLED");
+                                                         SessionManager.sendEventToCustomer(request.getUserId(), cancelEvent);
+
+                                                         response = new OrderResponse(true, "취소 완료", request.getOrderId());
+                                                         System.out.println("[서버] 미체결 취소 완료 - orderId: " + request.getOrderId());
+                                                     } else {
+                                                         // 🔥 이미 체결됐거나 이미 취소된 경우 - 조용히 무시하지 않고 명확히 알림
+                                                         response = new OrderResponse(false, "이미 체결되었거나 취소된 주문입니다.", request.getOrderId());
+                                                         System.out.println("[서버] 취소 실패(이미 처리됨) - orderId: " + request.getOrderId());
+                                                     }
+
+                                                     ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                                 }
+                                    else if ("ORDER_MODIFY_REQUEST".equals(type)) {
+                                        OrderModifyRequest request = gson.fromJson(msg, OrderModifyRequest.class);
+
+                                        model.Order oldOrder = orderDAO.findById(request.getOrderId());
+
+                                        boolean cancelled = orderDAO.cancelPendingById(request.getOrderId());   // 🔥 결과 확인
+
+                                        OrderResponse response;
+                                        if (!cancelled) {
+                                            // 🔥 이미 체결/취소된 주문은 정정 불가 - 새 주문을 만들지 않고 즉시 실패 응답
+                                            response = new OrderResponse(false, "이미 체결되었거나 취소되어 정정할 수 없습니다.", -1);
+                                            ctx.writeAndFlush(gson.toJson(response) + "\n");
+                                            return;
+                                        }
+
+//                                        service.OrderAuditDAO.logCancel(oldOrder);   // 🔥 이제 안전하게 취소 로그
+
+                                        double orderPrice = "LIMIT".equals(request.getOrderType()) ? request.getNewPrice() : 0;
+                                        double triggerPrice = request.getNewPrice();
+
+                                        int newOrderId = orderDAO.insertPending(
+                                                request.getUserId(), request.getSymbol(), request.getSide(),
+                                                request.getOrderType(), orderPrice, triggerPrice, request.getQty()
+                                        );
+
+                                        if (newOrderId > 0) {
+                                            String sideKor = "BUY".equals(request.getSide()) ? "매수" : "매도";
+
+                                            model.OrderAuditLog modifyLog = new model.OrderAuditLog();
+                                            modifyLog.time = java.time.LocalDateTime.now().withNano(0);
+                                            modifyLog.userId = request.getUserId();
+                                            modifyLog.exchange = service.OrderAuditDAO.resolveExchange(request.getSymbol());
+                                            modifyLog.server = "정정";
+                                            modifyLog.orderId = request.getOrderId() + "→" + newOrderId;
+                                            modifyLog.symbol = request.getSymbol();
+                                            modifyLog.side = request.getSide();
+                                            modifyLog.qty = request.getQty();
+
+                                            if ("LIMIT".equals(request.getOrderType())) {
+                                                modifyLog.eventType = "지정가 " + sideKor + " 정정";
+                                                modifyLog.orderPrice = request.getNewPrice();
+                                                modifyLog.openOrderSnapshot = service.OrderAuditDAO.buildOpenOrderSnapshot(request.getUserId());
+                                            } else {
+                                                // 🔥 MIT - trigger 변화(옛→새) 명시
+                                                double oldTrigger = oldOrder != null ? oldOrder.getTriggerPrice() : 0;
+                                                modifyLog.eventType = "MIT " + sideKor + " 정정 (trigger:" + oldTrigger + "→" + request.getNewPrice() + ")";
+                                                // orderPrice는 MIT 규칙대로 0 유지, openOrderSnapshot은 예약이므로 안 채움
+                                            }
+
+                                            new service.OrderAuditDAO().insertLog(modifyLog);
+
+                                            ClientEventMessage modifyEvent = new ClientEventMessage(
+                                                    "PENDING_ORDER_CHANGED", request.getSymbol(), "ORDER_MODIFIED"
+                                            );
+                                            SessionManager.sendEventToCustomer(request.getUserId(), modifyEvent);
+
+                                            response = new OrderResponse(true, "정정 완료", newOrderId);
+                                        } else {
+                                            response = new OrderResponse(false, "정정 실패", -1);
+                                        }
+
                                         ctx.writeAndFlush(gson.toJson(response) + "\n");
-                                        System.out.println("[서버] 미체결 취소 완료 - orderId: " + request.getOrderId());
-                                    } else if ("ORDER_BULK_CANCEL_REQUEST".equals(type)) {
+                                    }else if ("ORDER_BULK_CANCEL_REQUEST".equals(type)) {
                                         OrderBulkCancelRequest request = gson.fromJson(msg, OrderBulkCancelRequest.class);
 
                                         switch (request.getMode()) {
                                             case "BY_TYPE_SIDE" -> {
-                                                orderDAO.cancelByTypeAndSide(
+                                                List<model.Order> targets = orderDAO.findPendingByUserAndTypeAndSide(
                                                         request.getUserId(), request.getSymbol(), request.getOrderType(), request.getSide()
                                                 );
-                                                //리스너등록
+
+                                                orderDAO.cancelByTypeAndSide(   // 🔥 먼저 취소
+                                                        request.getUserId(), request.getSymbol(), request.getOrderType(), request.getSide()
+                                                );
+
+                                                for (model.Order o : targets) {
+                                                    service.OrderAuditDAO.logCancel(o);   // 🔥 그 다음 로그
+                                                }
+
                                                 ClientEventMessage event = new ClientEventMessage("PENDING_ORDER_CHANGED", request.getSymbol(), "ORDER_CANCELLED");
                                                 SessionManager.sendEventToCustomer(request.getUserId(), event);
 
@@ -549,8 +882,14 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                                         + ", side: " + request.getSide());
                                             }
                                             case "BY_SYMBOL" -> {
-                                                orderDAO.cancelBySymbol(request.getUserId(), request.getSymbol());
-                                                //리스너등록
+                                                List<model.Order> targets = orderDAO.getMyPendingOrders(request.getUserId(), request.getSymbol());
+
+                                                orderDAO.cancelBySymbol(request.getUserId(), request.getSymbol());   // 🔥 먼저 취소
+
+                                                for (model.Order o : targets) {
+                                                    service.OrderAuditDAO.logCancel(o);   // 🔥 그 다음 로그
+                                                }
+
                                                 ClientEventMessage event = new ClientEventMessage("PENDING_ORDER_CHANGED", request.getSymbol(), "ORDER_CANCELLED");
                                                 SessionManager.sendEventToCustomer(request.getUserId(), event);
 
@@ -558,8 +897,14 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                                         + ", symbol: " + request.getSymbol());
                                             }
                                             case "ALL" -> {
-                                                orderDAO.cancelAll(request.getUserId());
-                                                //리스너등록
+                                                List<model.Order> targets = orderDAO.findPendingByUser(request.getUserId());   // 로그에 쓸 정보만 미리 확보
+
+                                                orderDAO.cancelAll(request.getUserId());   // 🔥 실제 취소를 먼저 실행
+
+                                                for (model.Order o : targets) {
+                                                    service.OrderAuditDAO.logCancel(o);   // 🔥 취소가 끝난 뒤에 로그 (스냅샷이 취소 반영된 최신 상태로 찍힘)
+                                                }
+
                                                 ClientEventMessage event = new ClientEventMessage("PENDING_ORDER_CHANGED", null, "ORDER_CANCELLED");
                                                 SessionManager.sendEventToCustomer(request.getUserId(), event);
 
@@ -767,6 +1112,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                                 /// /////////////고객 탑인포패널 리프레쉬하라고 푸쉬/////////////
                                                 topInfoService.pushToUser(info.userId);
                                                 customerDepositService.pushBalanceToUser(info.userId);
+                                                SessionManager.sendEventToCustomer(info.userId, new ClientEventMessage("BALANCE_CHANGED", null, null));  // 🔥 추가
+
                                                 //////////////////////////////////////service
                                                 // 🔥 승인된 고객에게 사운드 알림
                                                 String soundType = "DEPOSIT".equals(info.type) ? "DEPOSIT_APPROVED" : "WITHDRAW_APPROVED";
@@ -787,6 +1134,7 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                                 // 🔥 출금 거절로 환불된 고객들에게 담보금 push (입금 거절은 애초에 잔액 변화 없어서 push해도 값 그대로지만, 일괄 처리해도 무방)
                                                 topInfoService.pushToUser(info.userId);
                                                 customerDepositService.pushBalanceToUser(info.userId);
+                                                SessionManager.sendEventToCustomer(info.userId, new ClientEventMessage("BALANCE_CHANGED", null, null));  // 🔥 추가
 
                                                 // 🔥 거절된 고객에게 사운드 알림
                                                 String soundType = "DEPOSIT".equals(info.type) ? "DEPOSIT_REJECTED" : "WITHDRAW_REJECTED";
@@ -813,6 +1161,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                                 if ("WITHDRAW".equals(req.requestType)) {
                                                     topInfoService.pushToUser(req.userId);
                                                     customerDepositService.pushBalanceToUser(req.userId);
+                                                    SessionManager.sendEventToCustomer(req.userId, new ClientEventMessage("BALANCE_CHANGED", null, null));  // 🔥 추가
+
                                                 }
 
                                                 SessionManager.broadcastToAdmins(buildDepositMonitoringResponse());
@@ -1052,6 +1402,8 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                                 topInfoService.pushToUser(userId);
                                                 customerDepositService.pushBalanceToUser(userId);
+                                                SessionManager.sendEventToCustomer(userId, new ClientEventMessage("BALANCE_CHANGED", null, null));  // 🔥 추가
+
                                                 SessionManager.broadcastToAdmins(new model.DataChangedEvent("USER_DATA", req.username, req.adminId));
 
                                                 // 고객에게는 승인 사운드
@@ -1357,17 +1709,17 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
                                                      marketSpecDAO.saveHsiData(
                                                              request.getStart1(), request.getEnd1(), request.getStart2(), request.getEnd2(),
-                                                             request.getStart3(), request.getEnd3(), request.isHolidayToday(), request.getExpiryDate()
+                                                             request.getStart3(), request.getEnd3(), request.isHolidayToday(), request.getExpiryDate(),
+                                                             request.getRolloverDaysBeforeExpiry()   // 🔥 신규 파라미터
                                                      );
 
                                                      OvernightSchedulerHolder.get().reload();
 
                                                      MarketOperationSaveResponse response = new MarketOperationSaveResponse(true, "항셍 저장 완료");
                                                      ctx.writeAndFlush(gson.toJson(response) + "\n");
-                                                     SessionManager.broadcastToAdmins(new model.DataChangedEvent("MARKET_OPERATION")); // 🔥 추가
+                                                     SessionManager.broadcastToAdmins(new model.DataChangedEvent("MARKET_OPERATION"));
                                                      System.out.println("[서버] 항셍 운영시간 저장 완료");
-
-                                    } else if ("OVERSEAS_SAVE_REQUEST".equals(type)) {
+                                                 }else if ("OVERSEAS_SAVE_REQUEST".equals(type)) {
                                         OverseasSaveRequest request = gson.fromJson(msg, OverseasSaveRequest.class);
 
                                         marketSpecDAO.saveOverseasDataList(request.getRows());
@@ -1686,31 +2038,33 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                     ExchangeRateAllResponse response = new ExchangeRateAllResponse(Store.ExchangeRateCache.getAll());
                                     ctx.writeAndFlush(gson.toJson(response) + "\n");
 
-                                } else if ("EXCHANGE_RATE_UPDATE_REQUEST".equals(type)) {
-                                    // 관리자가 환율 변경
-                                    ExchangeRateUpdateRequest request = gson.fromJson(msg, ExchangeRateUpdateRequest.class);
+                                } else if ("EXCHANGE_RATE_LIST_REQUEST".equals(type)) {
+                                        List<model.ExchangeRateDto> rates = exchangeRateDAO.findAll();
+                                        ExchangeRateListResponse response = new ExchangeRateListResponse(rates);
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
 
-                                    String sql = "UPDATE exchange_rates SET rate_to_krw=? WHERE currency=?";
-                                    try (Connection conn = db.DBUtil.getConnection();
-                                         PreparedStatement ps = conn.prepareStatement(sql)) {
-                                        ps.setDouble(1, request.getRate());
-                                        ps.setString(2, request.getCurrency());
-                                        ps.executeUpdate();
+                                    } else if ("EXCHANGE_RATE_UPDATE_REQUEST".equals(type)) {
+                                        ExchangeRateUpdateRequest request = gson.fromJson(msg, ExchangeRateUpdateRequest.class);
 
-                                        Store.ExchangeRateCache.load();   // 캐시 재로드
+                                        boolean success = exchangeRateDAO.updateRate(request.getCurrency(), request.getRate());
+                                        if (success) {
+                                            Store.ExchangeRateCache.load();
+                                        }
 
-                                        // 🔥 접속 중인 모든 고객에게 push
-                                        ExchangeRatePushEvent event = new ExchangeRatePushEvent(Store.ExchangeRateCache.getAll());
+                                        // 🔴 이 부분이 빠져 있음 — 추가해야 함
+                                       ExchangeRatePushEvent event = new ExchangeRatePushEvent(Store.ExchangeRateCache.getAll());
                                         for (Integer userId : SessionManager.getConnectedCustomerIds()) {
                                             SessionManager.sendToCustomer(userId, event);
                                         }
 
-                                        ctx.writeAndFlush(gson.toJson(new MarketOperationSaveResponse(true, "환율 저장 완료")) + "\n");
-                                    } catch (Exception e) {
-                                        e.printStackTrace();
-                                        ctx.writeAndFlush(gson.toJson(new MarketOperationSaveResponse(false, "환율 저장 실패")) + "\n");
+
+
+                                        ExchangeRateUpdateResult result = new ExchangeRateUpdateResult(
+                                                success,
+                                                success ? "환율이 수정되었습니다." : "환율 수정에 실패했습니다."
+                                        );
+                                        ctx.writeAndFlush(gson.toJson(result) + "\n");
                                     }
-                                }
 
                                     //////////////
 
@@ -1903,6 +2257,55 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
                                         }
                                     }else if ("PING".equals(type)) {
                                         // 🔥 하트비트 - 응답 안 해도 됨, 수신 자체가 IdleStateHandler 타이머를 리셋시킴
+                                    }else if ("IP_CHECK_REQUEST".equals(type)) {
+                                        IpCheckRequest request = gson.fromJson(msg, IpCheckRequest.class);
+                                        String observedIp = ctx.channel().remoteAddress().toString().replace("/", "").split(":")[0];
+
+                                        SessionInfo baseline = SessionManager.getSessionInfo(request.getUserId());
+                                        if (baseline != null) {
+                                            boolean ipChanged = !baseline.getIp().equals(observedIp);
+                                            boolean macChanged = !baseline.getMac().equals(request.getMac());
+
+                                            if (ipChanged || macChanged) {
+                                                ChannelHandlerContext mainCtx = SessionManager.getCustomer(request.getUserId());
+                                                if (mainCtx != null) {
+                                                    ForceLogoutMessage forceLogout = new ForceLogoutMessage("접속 환경이 변경되어 로그아웃되었습니다.");
+                                                    mainCtx.writeAndFlush(gson.toJson(forceLogout) + "\n");
+                                                    mainCtx.close();
+                                                }
+                                                System.out.println("[서버] IP/MAC 변경 감지 - userId: " + request.getUserId()
+                                                        + ", baseline ip=" + baseline.getIp() + " → " + observedIp
+                                                        + ", baseline mac=" + baseline.getMac() + " → " + request.getMac());
+                                            }
+                                        }
+                                        ctx.close(); // 프로브 연결은 용건 끝났으니 바로 닫음
+                                    }else if ("AUDIT_LOG_REQUEST".equals(type)) {
+                                        AuditLogRequest request = gson.fromJson(msg, AuditLogRequest.class);
+
+                                        model.OrderAuditLog log = new model.OrderAuditLog();
+                                        log.time = java.time.LocalDateTime.now().withNano(0);
+                                        log.eventType = request.getEventType();
+                                        log.userId = request.getUserId();
+                                        log.symbol = request.getSymbol();
+                                        log.orderPrice = request.getOrderPrice();
+                                        log.filledPrice = request.getFilledPrice();
+                                        log.side = request.getSide();
+                                        log.qty = request.getQty();
+                                        log.exchange = request.getSymbol() != null
+                                                ? service.OrderAuditDAO.resolveExchange(request.getSymbol())
+                                                : "";
+                                        log.server = "";
+
+                                        new service.OrderAuditDAO().insertLog(log);
+
+                                    } else if ("ORDER_AUDIT_QUERY_REQUEST".equals(type)) {   // 🔥 신규
+                                        OrderAuditQueryRequest request = gson.fromJson(msg, OrderAuditQueryRequest.class);
+
+                                        java.time.LocalDate date = java.time.LocalDate.parse(request.getDate());
+                                        List<model.OrderAuditRow> rows = new service.OrderAuditDAO().loadLogsByTradingDay(request.getUserId(), date);
+
+                                        OrderAuditQueryResponse response = new OrderAuditQueryResponse(true, rows);
+                                        ctx.writeAndFlush(gson.toJson(response) + "\n");
                                     }
 
 
@@ -1980,6 +2383,42 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
 
 
+    // 🔥 호가만 바뀌었을 때 (호가 콜백 전용) - LIMIT만 체크, prevPrices 절대 건드리지 않음
+    private static void applyQuoteUpdate(String symbol, double lastKnownPrice, double bestBid, double bestAsk) {
+
+        orderExecutionService.checkLimitOrders(symbol, bestBid, bestAsk);
+
+        broadcastPriceUpdate(symbol, lastKnownPrice, bestBid, bestAsk);
+    }
+
+    // 🔥 실제 체결(tape)이 발생했을 때 (체결 콜백/시뮬레이터 tick 전용)
+    private static void applyTradeUpdate(String symbol, double currentPrice, double bestBid, double bestAsk) {
+
+        double prevPrice = prevPrices.getOrDefault(symbol, currentPrice);
+
+        orderExecutionService.checkLiquidation(symbol, currentPrice);
+        orderExecutionService.checkTpSl(symbol, prevPrice, currentPrice);
+        orderExecutionService.checkStopAndMitOrders(symbol, prevPrice, currentPrice, bestBid, bestAsk);
+        orderExecutionService.checkLimitOrders(symbol, bestBid, bestAsk);   // 체결로 호가도 바뀌었을 수 있으니 같이 체크
+
+        broadcastPriceUpdate(symbol, currentPrice, bestBid, bestAsk);
+
+        prevPrices.put(symbol, currentPrice);   // 🔥 오직 이 경로에서만 갱신
+    }
+
+    // 브로드캐스트 공통 부분만 따로 뺌 (중복 제거용)
+    private static void broadcastPriceUpdate(String symbol, double price, double bestBid, double bestAsk) {
+        Market.OrderBookSnapshot snapshot = marketContexts.get(symbol).getSnapshot();
+        if (snapshot != null) {
+            PriceUpdateMessage update = new PriceUpdateMessage(
+                    symbol, price, bestBid, bestAsk, snapshot.getAsks(), snapshot.getBids()
+            );
+            SessionManager.broadcastToSubscribers(symbol, update);
+        }
+    }
+
+
+
 
 
     // 🔥 관리자 개별/전체청산에서 공용으로 쓰는 청산 헬퍼
@@ -1997,9 +2436,12 @@ for (Market.MarketSpec spec : Market.MarketSpecCache.getAll()) {
 
         double currentPrice = Store.PriceStore.getLast(symbol);
 
+        java.time.LocalDateTime signalTime = java.time.LocalDateTime.now().withNano(0);
+
         int orderId = orderExecutionService.executeMarket(
                 userId, symbol, closingSide, (int) pos.getQty(), currentPrice,
-                false, 0, false, 0
+                false, 0, false, 0,
+                signalTime   // 🔥 추가
         );
 
         return orderId > 0;

@@ -189,11 +189,14 @@ public class MarketSpecDAO {
 //항셍데이타
 
     public String[] loadHsiData() {
-        String sql = "SELECT trade_start, trade_end, trade_start2, trade_end2, trade_start3, trade_end3, is_active, expiry_date FROM market_specs WHERE symbol = 'HSI'";
+        String sql = "SELECT trade_start, trade_end, trade_start2, trade_end2, trade_start3, trade_end3, " +
+                "is_active, expiry_date, rollover_days_before_expiry, rollover_status FROM market_specs WHERE symbol = 'HSI'";
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ResultSet rs = ps.executeQuery();
             if (rs.next()) {
+                int rollover = rs.getInt("rollover_days_before_expiry");
+                String rolloverStr = rs.wasNull() ? "" : String.valueOf(rollover);
                 return new String[]{
                         nvl(rs.getString("trade_start")),
                         nvl(rs.getString("trade_end")),
@@ -201,29 +204,34 @@ public class MarketSpecDAO {
                         nvl(rs.getString("trade_end2")),
                         nvl(rs.getString("trade_start3")),
                         nvl(rs.getString("trade_end3")),
-                        rs.getBoolean("is_active") ? "false" : "true", // 휴장여부
-                        nvl(rs.getString("expiry_date"))
+                        rs.getBoolean("is_active") ? "false" : "true",
+                        nvl(rs.getString("expiry_date")),
+                        rolloverStr,
+                        nvl(rs.getString("rollover_status"))
                 };
             }
         } catch (SQLException e) {
             e.printStackTrace();
         }
-        return new String[]{"", "", "", "", "", "", "false", ""};
+        return new String[]{"", "", "", "", "", "", "false", "", "", "NONE"};
     }
 
     public void saveHsiData(String start1, String end1,
                             String start2, String end2,
                             String start3, String end3,
-                            boolean isHoliday, String expiry) {
+                            boolean isHoliday, String expiry,
+                            Integer rolloverDaysBeforeExpiry) {   // 🔥 신규 파라미터
         String sql = """
-        UPDATE market_specs SET
-            trade_start = ?, trade_end = ?,
-            trade_start2 = ?, trade_end2 = ?,
-            trade_start3 = ?, trade_end3 = ?,
-            is_active = ?,
-            expiry_date = ?
-        WHERE symbol = 'HSI'
-    """;
+    UPDATE market_specs SET
+        trade_start = ?, trade_end = ?,
+        trade_start2 = ?, trade_end2 = ?,
+        trade_start3 = ?, trade_end3 = ?,
+        is_active = ?,
+        rollover_days_before_expiry = ?,
+        rollover_status = 'NONE'
+    WHERE symbol = 'HSI'
+""";
+        // 🔥 expiry_date는 더 이상 이 메서드에서 안 씀 - 자동 이월 전용 필드가 됐으므로 UPDATE 대상에서 제외
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, start1);
@@ -233,10 +241,10 @@ public class MarketSpecDAO {
             ps.setString(5, start3);
             ps.setString(6, end3);
             ps.setBoolean(7, !isHoliday);
-            if (expiry.isEmpty()) {
-                ps.setNull(8, Types.DATE);
+            if (rolloverDaysBeforeExpiry == null) {
+                ps.setNull(8, Types.INTEGER);
             } else {
-                ps.setString(8, expiry);
+                ps.setInt(8, rolloverDaysBeforeExpiry);
             }
             ps.executeUpdate();
             MarketSpecCache.refresh();
@@ -380,27 +388,34 @@ WHERE symbol=?
 
     public model.HsiMarketData loadHsiDataModel() {
         String[] data = loadHsiData();
+        Integer rolloverDays = data[8].isEmpty() ? null : Integer.parseInt(data[8]);
         return new model.HsiMarketData(
                 trim(data[0]), trim(data[1]), trim(data[2]), trim(data[3]),
-                trim(data[4]), trim(data[5]), data[6].equals("true"), data[7]
+                trim(data[4]), trim(data[5]), data[6].equals("true"), data[7],
+                rolloverDays, data[9]
         );
     }
 
     public List<model.OverseasMarketRow> loadOverseasDataList() {
         List<model.OverseasMarketRow> list = new ArrayList<>();
-        String sql = "SELECT symbol, display_name, trade_start, trade_end, is_active, expiry_date " +
+        String sql = "SELECT symbol, display_name, trade_start, trade_end, is_active, expiry_date, " +
+                "rollover_days_before_expiry, rollover_status " +
                 "FROM market_specs WHERE market_type='OVERSEAS_FUTURES' AND symbol != 'HSI' ORDER BY display_name";
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql);
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) {
+                int rollover = rs.getInt("rollover_days_before_expiry");
+                Integer rolloverObj = rs.wasNull() ? null : rollover;
                 list.add(new model.OverseasMarketRow(
                         !rs.getBoolean("is_active"),
                         rs.getString("symbol"),
                         rs.getString("display_name"),
                         rs.getString("trade_start"),
                         rs.getString("trade_end"),
-                        rs.getString("expiry_date") == null ? "" : rs.getString("expiry_date")
+                        rs.getString("expiry_date") == null ? "" : rs.getString("expiry_date"),
+                        rolloverObj,
+                        rs.getString("rollover_status")
                 ));
             }
         } catch (SQLException e) {
@@ -410,17 +425,18 @@ WHERE symbol=?
     }
 
     public void saveOverseasDataList(List<model.OverseasMarketRow> rows) {
-        String sql = "UPDATE market_specs SET trade_start=?, trade_end=?, is_active=?, expiry_date=? WHERE symbol=?";
+        // 🔥 expiry_date는 더 이상 이 메서드에서 안 씀 - 자동 이월 전용 필드가 됐으므로 UPDATE 대상에서 제외
+        String sql = "UPDATE market_specs SET trade_start=?, trade_end=?, is_active=?, rollover_days_before_expiry=?, rollover_status='NONE' WHERE symbol=?";
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             for (model.OverseasMarketRow row : rows) {
                 ps.setString(1, row.getTradeStart());
                 ps.setString(2, row.getTradeEnd());
                 ps.setBoolean(3, !row.isHoliday());
-                if (row.getExpiryDate() == null || row.getExpiryDate().isEmpty()) {
-                    ps.setNull(4, Types.DATE);
+                if (row.getRolloverDaysBeforeExpiry() == null) {
+                    ps.setNull(4, Types.INTEGER);
                 } else {
-                    ps.setString(4, row.getExpiryDate());
+                    ps.setInt(4, row.getRolloverDaysBeforeExpiry());
                 }
                 ps.setString(5, row.getSymbol());
                 ps.addBatch();
@@ -952,115 +968,99 @@ public void updateDomesticEntryMargin(long margin){
 
     }
 
-    private MarketSpec getSpec(String sql){
-
-
-        try(Connection conn = DBUtil.getConnection();
-            PreparedStatement ps = conn.prepareStatement(sql)){
-
+    private MarketSpec getSpec(String sql) {
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
 
             ResultSet rs = ps.executeQuery();
 
+            if (rs.next()) {
 
-            if(rs.next()){
+                LocalTime start = null, end = null, auctionStart = null;
+                LocalTime start2 = null, end2 = null, start3 = null, end3 = null;
 
+                if (rs.getTime("trade_start") != null) start = rs.getTime("trade_start").toLocalTime();
+                if (rs.getTime("trade_end") != null) end = rs.getTime("trade_end").toLocalTime();
+                if (rs.getTime("auction_start_time") != null) auctionStart = rs.getTime("auction_start_time").toLocalTime();
+                if (rs.getTime("trade_start2") != null) start2 = rs.getTime("trade_start2").toLocalTime();
+                if (rs.getTime("trade_end2") != null) end2 = rs.getTime("trade_end2").toLocalTime();
+                if (rs.getTime("trade_start3") != null) start3 = rs.getTime("trade_start3").toLocalTime();
+                if (rs.getTime("trade_end3") != null) end3 = rs.getTime("trade_end3").toLocalTime();
 
-                LocalTime start = null;
-                LocalTime end = null;
-                LocalTime auctionStart= null;
+                // 🔥 신규 필드
+                java.time.LocalDate expiryDate = null;
+                java.sql.Date expiryRaw = rs.getDate("expiry_date");
+                if (expiryRaw != null) expiryDate = expiryRaw.toLocalDate();
 
-                LocalTime start2 = null;   // 🔥 추가
-                LocalTime end2 = null;     // 🔥 추가
-                LocalTime start3 = null;   // 🔥 추가
-                LocalTime end3 = null;     // 🔥 추가
+                Integer rolloverDays = null;
+                int rd = rs.getInt("rollover_days_before_expiry");
+                if (!rs.wasNull()) rolloverDays = rd;
 
-
-                if(rs.getTime("trade_start") != null)
-                    start =
-                            rs.getTime("trade_start").toLocalTime();
-
-
-                if(rs.getTime("trade_end") != null)
-                    end =
-                            rs.getTime("trade_end").toLocalTime();
-
-                if(rs.getTime("auction_start_time") != null)
-                    auctionStart =
-                            rs.getTime("auction_start_time").toLocalTime();
-
-
-                // 🔥 추가
-                if (rs.getTime("trade_start2") != null)
-                    start2 = rs.getTime("trade_start2").toLocalTime();
-                if (rs.getTime("trade_end2") != null)
-                    end2 = rs.getTime("trade_end2").toLocalTime();
-                if (rs.getTime("trade_start3") != null)
-                    start3 = rs.getTime("trade_start3").toLocalTime();
-                if (rs.getTime("trade_end3") != null)
-                    end3 = rs.getTime("trade_end3").toLocalTime();
-
-
-
+                String contractCycle = rs.getString("contract_cycle");
+                String rolloverStatus = rs.getString("rollover_status");
 
                 return new MarketSpec(
-
                         rs.getString("symbol"),
-
                         rs.getString("display_name"),
-
                         rs.getString("contract_code"),
-
-                        rs.getString("expiry_date") == null
-                                ? ""
-                                : rs.getString("expiry_date").substring(0,7),
-
-
+                        rs.getString("expiry_date") == null ? "" : rs.getString("expiry_date").substring(0,7),
                         rs.getInt("price_start"),
                         rs.getInt("price_end"),
                         rs.getInt("initial_price"),
-
                         rs.getDouble("tick_size"),
                         rs.getDouble("tick_value"),
                         rs.getDouble("contract_multiplier"),
                         rs.getString("currency"),
                         rs.getDouble("fee_per_contract"),
-
-
                         rs.getLong("entry_margin"),
                         rs.getLong("maint_margin"),
-
                         rs.getLong("overnight_margin"),
                         rs.getBoolean("overnight_enabled"),
-
-
                         rs.getBoolean("is_active"),
-
-                        start,
-                        end,
-                        auctionStart,
-                        start2,   // 🔥 추가
-                        end2,     // 🔥 추가
-                        start3,   // 🔥 추가
-                        end3,     // 🔥 추가
+                        start, end, auctionStart, start2, end2, start3, end3,
                         rs.getString("fee_type"),
-                        rs.getString("market_type")
-
+                        rs.getString("market_type"),
+                        expiryDate, rolloverDays, contractCycle, rolloverStatus   // 🔥 신규 4개
                 );
-
-
             }
 
-
-        }catch(SQLException e){
-
+        } catch (SQLException e) {
             e.printStackTrace();
-
         }
 
-
         return null;
-
     }
+
+
+
+    public void updateRolloverStatus(String symbol, String status) {
+        String sql = "UPDATE market_specs SET rollover_status=? WHERE symbol=?";
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, status);
+            ps.setString(2, symbol);
+            ps.executeUpdate();
+            MarketSpecCache.refresh();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void updateContractCodeAndExpiry(String symbol, String contractCode, java.time.LocalDate expiryDate) {
+        String sql = "UPDATE market_specs SET contract_code=?, expiry_date=?, rollover_status='NONE' WHERE symbol=?";
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, contractCode);
+            ps.setDate(2, java.sql.Date.valueOf(expiryDate));
+            ps.setString(3, symbol);
+            ps.executeUpdate();
+            MarketSpecCache.refresh();
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+
 
 /// //////////////심볼 들고오기 ///////
     public List<String> getDomesticSymbols(){

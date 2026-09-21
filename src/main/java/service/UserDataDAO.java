@@ -686,7 +686,7 @@ VALUES
     }
 
 
-    private String symbolToKor(String symbol) {
+    public static String symbolToKor(String symbol) {
 
         return switch (symbol) {
 

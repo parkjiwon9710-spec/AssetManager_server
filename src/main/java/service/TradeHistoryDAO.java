@@ -73,7 +73,7 @@ public class  TradeHistoryDAO {
                         "o.qty AS order_qty, " +
                         "t.qty AS filled_qty, " +
 
-                        "o.price AS order_price, " +
+                        "o.order_price AS order_price, "+
                         "t.price AS filled_price, " +
 
                         "t.realized_pnl, " +

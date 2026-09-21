@@ -16,14 +16,14 @@ import java.util.Map;
 public class OrderDAO {
 
     public void insert(Order o) {
-        String sql = "INSERT INTO orders (user_id, symbol, side, price, qty, status) VALUES (?,?,?,?,?,?)";
+        String sql = "INSERT INTO orders (user_id, symbol, side, order_price, qty, status) VALUES (?,?,?,?,?,?)";
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
 
             ps.setInt(1, o.getUserId());
             ps.setString(2, o.getSymbol());
             ps.setString(3, o.getSide());
-            ps.setDouble(4, o.getPrice());
+            ps.setDouble(4, o.getOrderPrice());
             ps.setInt(5, o.getQty());
             ps.setString(6, o.getStatus());
             ps.executeUpdate();
@@ -33,13 +33,17 @@ public class OrderDAO {
         }
     }
 
-    public void markFilled(int orderId, double executionPrice) {
-        String sql = "UPDATE orders SET status='FILLED', price=? WHERE id=?";   // 🔥 price=? 추가
+
+    // markFilled: 주문가/체결가 둘 다 받도록 변경
+
+    public void markFilled(int orderId, double orderPrice, double filledPrice) {
+        String sql = "UPDATE orders SET status='FILLED', order_price=?, filled_price=? WHERE id=?";
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
 
-            ps.setDouble(1, executionPrice);   // 첫 번째 ? → price
-            ps.setInt(2, orderId);             // 두 번째 ? → id
+            ps.setDouble(1, orderPrice);
+            ps.setDouble(2, filledPrice);
+            ps.setInt(3, orderId);
 
             ps.executeUpdate();
 
@@ -49,17 +53,19 @@ public class OrderDAO {
     }
 
     // 1) 기존 것 - 반드시 남아있어야 함
-    public int insertFilled(int userId, String symbol, String side, double price, int qty) {
-        String sql = "INSERT INTO orders (user_id, symbol, side, order_type, price, qty, status) " +
-                "VALUES (?, ?, ?, 'MARKET', ?, ?, 'FILLED')";
+    // insertFilled (MARKET 즉시체결용) - orderPrice/filledPrice 분리
+    public int insertFilled(int userId, String symbol, String side, double orderPrice, double filledPrice, int qty) {
+        String sql = "INSERT INTO orders (user_id, symbol, side, order_type, order_price, filled_price, qty, status) " +
+                "VALUES (?, ?, ?, 'MARKET', ?, ?, ?, 'FILLED')";
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
 
             ps.setInt(1, userId);
             ps.setString(2, symbol);
             ps.setString(3, side);
-            ps.setDouble(4, price);
-            ps.setInt(5, qty);
+            ps.setDouble(4, orderPrice);
+            ps.setDouble(5, filledPrice);
+            ps.setInt(6, qty);
             ps.executeUpdate();
 
             ResultSet rs = ps.getGeneratedKeys();
@@ -70,14 +76,13 @@ public class OrderDAO {
         return -1;
     }
 
-    // 2) 새로 추가한 것 - TP/SL 전용
+    // 2) 새로 추가한 것 - TP/SL 전용- orderPrice/filledPrice 분리
     // 2) TP/SL 전용 (positionPrice 포함, 10개 파라미터)
-    public int insertFilled(int userId, String symbol, String side, double price, int qty,
+    public int insertFilled(int userId, String symbol, String side, double orderPrice, double filledPrice, int qty,
                             double triggerPrice, double positionPrice, boolean isTpSl, String tpSlType,
                             Integer tickCount) {
-
-        String sql = "INSERT INTO orders (user_id, symbol, side, order_type, price, trigger_price, position_price, qty, status, is_tp_sl, tp_sl_type, tick_count) " +
-                "VALUES (?, ?, ?, 'MARKET', ?, ?, ?, ?, 'FILLED', ?, ?, ?)";
+        String sql = "INSERT INTO orders (user_id, symbol, side, order_type, order_price, filled_price, trigger_price, position_price, qty, status, is_tp_sl, tp_sl_type, tick_count) " +
+                "VALUES (?, ?, ?, 'MARKET', ?, ?, ?, ?, ?, 'FILLED', ?, ?, ?)";
 
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
@@ -85,17 +90,18 @@ public class OrderDAO {
             ps.setInt(1, userId);
             ps.setString(2, symbol);
             ps.setString(3, side);
-            ps.setDouble(4, price);
-            ps.setDouble(5, triggerPrice);
-            ps.setDouble(6, positionPrice);
-            ps.setInt(7, qty);
-            ps.setBoolean(8, isTpSl);
-            ps.setString(9, tpSlType);
+            ps.setDouble(4, orderPrice);
+            ps.setDouble(5, filledPrice);
+            ps.setDouble(6, triggerPrice);
+            ps.setDouble(7, positionPrice);
+            ps.setInt(8, qty);
+            ps.setBoolean(9, isTpSl);
+            ps.setString(10, tpSlType);
 
             if (tickCount != null) {
-                ps.setInt(10, tickCount);
+                ps.setInt(11, tickCount);
             } else {
-                ps.setNull(10, java.sql.Types.INTEGER);
+                ps.setNull(11, java.sql.Types.INTEGER);
             }
 
             ps.executeUpdate();
@@ -110,8 +116,8 @@ public class OrderDAO {
     }
 
     public int insertPending(int userId, String symbol, String side, String orderType,
-                             double price, double triggerPrice, int qty) {
-        String sql = "INSERT INTO orders (user_id, symbol, side, order_type, price, trigger_price, qty, status) " +
+                             double orderPrice, double triggerPrice, int qty) {
+        String sql = "INSERT INTO orders (user_id, symbol, side, order_type, order_price, trigger_price, qty, status) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')";
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
@@ -120,7 +126,7 @@ public class OrderDAO {
             ps.setString(2, symbol);
             ps.setString(3, side);
             ps.setString(4, orderType);
-            ps.setDouble(5, price);
+            ps.setDouble(5, orderPrice);
             ps.setDouble(6, triggerPrice);
             ps.setInt(7, qty);
             ps.executeUpdate();
@@ -135,14 +141,16 @@ public class OrderDAO {
         return -1;
     }
 
-    public void cancelPendingById(int orderId) {
+    public boolean cancelPendingById(int orderId) {
         String sql = "UPDATE orders SET status='CANCELED' WHERE id=? AND status='PENDING'";
         try (Connection conn = DBUtil.getConnection();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, orderId);
-            ps.executeUpdate();
+            int affected = ps.executeUpdate();
+            return affected > 0;
         } catch (SQLException e) {
             e.printStackTrace();
+            return false;
         }
     }
 
@@ -185,22 +193,7 @@ public class OrderDAO {
     }
 
 
-    public String getSymbolByOrderId(int orderId) {
-        String sql = "SELECT symbol FROM orders WHERE id=?";
-        try (Connection conn = DBUtil.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
 
-            ps.setInt(1, orderId);
-            ResultSet rs = ps.executeQuery();
-
-            if (rs.next()) {
-                return rs.getString("symbol");
-            }
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
 
     public List<Order> findPendingConditionalOrders(String symbol) {
 
@@ -222,7 +215,7 @@ public class OrderDAO {
                     o.setUserId(rs.getInt("user_id"));
                     o.setSymbol(rs.getString("symbol"));
                     o.setSide(rs.getString("side"));
-                    o.setPrice(rs.getDouble("price"));
+                    o.setOrderPrice(rs.getDouble("order_price"));
                     o.setQty(rs.getInt("qty"));
                     o.setOrderType(rs.getString("order_type"));
                     o.setTriggerPrice(rs.getDouble("trigger_price"));
@@ -236,6 +229,93 @@ public class OrderDAO {
 
         return list;
     }
+
+
+
+//단건조회 메소드임
+    public Order findById(int orderId) {
+        String sql = "SELECT * FROM orders WHERE id=?";
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, orderId);
+            ResultSet rs = ps.executeQuery();
+            if (rs.next()) {
+                Order o = new Order();
+                o.setId(rs.getInt("id"));
+                o.setUserId(rs.getInt("user_id"));
+                o.setSymbol(rs.getString("symbol"));
+                o.setSide(rs.getString("side"));
+                o.setOrderPrice(rs.getDouble("order_price"));
+                o.setQty(rs.getInt("qty"));
+                o.setOrderType(rs.getString("order_type"));
+                o.setTriggerPrice(rs.getDouble("trigger_price"));
+                return o;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+
+
+    ////////////////////취소 대상 리스트업용
+    public List<Order> findPendingByUserAndTypeAndSide(int userId, String symbol, String orderType, String side) {
+        List<Order> list = new ArrayList<>();
+        String sql = "SELECT * FROM orders WHERE user_id=? AND symbol=? AND order_type=? AND side=? AND status='PENDING'";
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, userId);
+            ps.setString(2, symbol);
+            ps.setString(3, orderType);
+            ps.setString(4, side);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Order o = new Order();
+                o.setId(rs.getInt("id"));
+                o.setUserId(rs.getInt("user_id"));
+                o.setSymbol(rs.getString("symbol"));
+                o.setSide(rs.getString("side"));
+                o.setOrderPrice(rs.getDouble("order_price"));
+                o.setQty(rs.getInt("qty"));
+                o.setOrderType(rs.getString("order_type"));
+                o.setTriggerPrice(rs.getDouble("trigger_price"));
+                list.add(o);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+
+
+
+    public List<Order> findPendingByUser(int userId) {
+        List<Order> list = new ArrayList<>();
+        String sql = "SELECT * FROM orders WHERE user_id=? AND status='PENDING'";
+        try (Connection conn = DBUtil.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, userId);
+            ResultSet rs = ps.executeQuery();
+            while (rs.next()) {
+                Order o = new Order();
+                o.setId(rs.getInt("id"));
+                o.setUserId(rs.getInt("user_id"));
+                o.setSymbol(rs.getString("symbol"));
+                o.setSide(rs.getString("side"));
+                o.setOrderPrice(rs.getDouble("order_price"));
+                o.setQty(rs.getInt("qty"));
+                o.setOrderType(rs.getString("order_type"));
+                o.setTriggerPrice(rs.getDouble("trigger_price"));
+                list.add(o);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return list;
+    }
+    ////////////////////취소 대상 리스트업용
+
 
 
     public int getPendingQtyBySide(int userId, String symbol, String side) {
@@ -280,7 +360,7 @@ public class OrderDAO {
                     o.setUserId(rs.getInt("user_id"));
                     o.setSymbol(rs.getString("symbol"));
                     o.setSide(rs.getString("side"));
-                    o.setPrice(rs.getDouble("price"));
+                    o.setOrderPrice (rs.getDouble("order_price"));
                     o.setQty(rs.getInt("qty"));
                     o.setOrderType(rs.getString("order_type"));
                     o.setTriggerPrice(rs.getDouble("trigger_price"));
@@ -314,7 +394,7 @@ public class OrderDAO {
     public List<model.PendingOrderRow> loadPendingOrderRows(int userId) {
         List<model.PendingOrderRow> result = new ArrayList<>();
 
-        String sql = "SELECT id, symbol, side, order_type, price, trigger_price, qty " +
+        String sql = "SELECT id, symbol, side, order_type, order_price, trigger_price, qty " +
                 "FROM orders WHERE user_id=? AND status='PENDING'";
 
         try (Connection conn = DBUtil.getConnection();
@@ -337,7 +417,7 @@ public class OrderDAO {
                     default -> type;
                 };
 
-                double orderPrice = rs.getDouble("price") != 0 ? rs.getDouble("price") : rs.getDouble("trigger_price");
+                double orderPrice = rs.getDouble("order_price") != 0 ? rs.getDouble("order_price") : rs.getDouble("trigger_price");
                 int qty = rs.getInt("qty");
 
                 result.add(new model.PendingOrderRow(

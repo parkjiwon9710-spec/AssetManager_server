@@ -21,11 +21,14 @@ public class PositionService {
     private final UserStatusDAO userStatusDAO = new UserStatusDAO();
     private final ExchangeRateDAO exchangeRateDAO = new ExchangeRateDAO();
     private final TopInfoService topInfoService = new TopInfoService();
+    private final OrderAuditDAO orderAuditDAO = new service.OrderAuditDAO();
 
-    public void applyTrade(
+
+    public model.TradeResult applyTrade(
             int orderId, int userId, String symbol, OrderSide side, double price, int qty,
             boolean tpEnabled, int tpTicks, boolean slEnabled, int slTicks
     ){
+        model.TradeResult result = new model.TradeResult();
 
         Position p = positionDAO.findByUserAndSymbol(userId, symbol);
         MarketSpec spec = MarketSpecCache.get(symbol);
@@ -49,18 +52,17 @@ public class PositionService {
             np.setRealizedPnl(-entryFee);
             np.setOrderId(orderId);
 
-
-            // 🔥 TP/SL 반영
             applyTpSl(np, tpEnabled, tpTicks, slEnabled, slTicks, spec.getTickSize());
 
             positionDAO.insert(np);
             userService.applyBalanceChange(userId, -entryFee);
 
-
-//            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
-//            topInfoService.pushToUser(userId);
-//            /// /////////////////////
-            return;
+            result.fee = entryFee;
+            result.realizedPnl = 0;   // 🔥 -entryFee → 0
+            result.positionQty = qty;
+            result.positionAvgPrice = price;
+            result.positionDirection = np.getDirection();
+            return result;
         }
 
         boolean sameDirection =
@@ -88,15 +90,16 @@ public class PositionService {
             p.setAvgPrice(totalCost / newQty);
             p.setOrderId(orderId);
 
-            // 🔥 TP/SL 반영 (평단가가 바뀌었으니 새 평단가 기준으로 재계산)
             applyTpSl(p, tpEnabled, tpTicks, slEnabled, slTicks, spec.getTickSize());
 
             positionDAO.update(p);
 
-//            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
-//            topInfoService.pushToUser(userId);
-//            /// /////////////////////
-            return;
+            result.fee = entryFee;
+            result.realizedPnl = 0;   // 🔥 -entryFee → 0
+            result.positionQty = p.getQty();
+            result.positionAvgPrice = p.getAvgPrice();
+            result.positionDirection = p.getDirection();
+            return result;
         }
 
         // ===== 반대 방향 → 청산 =====
@@ -107,14 +110,12 @@ public class PositionService {
                         ? price - p.getAvgPrice()
                         : p.getAvgPrice() - price;
 
-        double ticks = Math.round(priceDiff / spec.getTickSize());
-        double rate = Store.ExchangeRateCache.getRate(spec.getCurrency());
-
-// 🔥 원 단위로 반올림 (환율 곱셈 과정에서 생기는 소수점 부산물 제거)
-        long tradingProfit = Math.round(ticks * spec.getTickValue() * rate * closeQty);
+        double rate = Store.ExchangeRateCache.getRate(spec.getCurrency());   // 기존에 이미 있는 줄
+        long ticks = Math.round(priceDiff / spec.getTickSize());
+        long tradingProfit = ticks * spec.getTickValueKrw(rate) * closeQty;
 
         double feeRaw = feeService.getFeeKRW(userId, symbol, price, closeQty);
-        long fee = Math.round(feeRaw);   // 🔥 수수료도 반올림
+        long fee = Math.round(feeRaw);
 
         long finalProfit = tradingProfit - fee;
         boolean isWin = tradingProfit > 0;
@@ -134,17 +135,17 @@ public class PositionService {
 
         int remainQty = Math.max(0, p.getQty() - closeQty);
 
+        result.fee = fee;
+        result.realizedPnl = tradingProfit;   // 🔥 finalProfit → tradingProfit (순손익)
+
         if (remainQty > 0) {
             p.setQty(remainQty);
-            // 부분 청산이라 포지션은 유지됨 - 기존 TP/SL 설정 유지 (건드리지 않음)
             positionDAO.update(p);
 
-
-//            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
-//            topInfoService.pushToUser(userId);;
-//            /// /////////////////////
-
-            return;
+            result.positionQty = remainQty;
+            result.positionAvgPrice = p.getAvgPrice();
+            result.positionDirection = p.getDirection();
+            return result;
         }
 
         positionDAO.update(p);
@@ -170,16 +171,24 @@ public class PositionService {
             np.setRealizedPnl(-entryFee);
             np.setOrderId(orderId);
 
-            // 🔥 TP/SL 반영
             applyTpSl(np, tpEnabled, tpTicks, slEnabled, slTicks, spec.getTickSize());
 
             positionDAO.insert(np);
 
-
-//            /// ////////////탑인포패널에서 1초스케줄려말고 변화시점에 푸쉬해서 탑인포패널 업데이트/////////////
-//            topInfoService.pushToUser(userId);
-//            /// /////////////////////
+            // 🔥 전환된 경우: 수수료/손익은 청산분+신규진입분 합산, 포지션은 새로 열린 쪽
+            result.fee = fee + entryFee;
+            result.realizedPnl = tradingProfit;   // 🔥 finalProfit - entryFee → tradingProfit (청산분 순손익만, 신규진입은 실현손익 없음)
+            result.positionQty = openQty;
+            result.positionAvgPrice = price;
+            result.positionDirection = np.getDirection();
+            return result;
         }
+
+        // 완전 청산 (전환 없음) - 포지션 없음
+        result.positionQty = 0;
+        result.positionAvgPrice = 0;
+        result.positionDirection = null;
+        return result;
     }
 
 
@@ -348,10 +357,10 @@ public class PositionService {
                 Market.MarketSpec spec = Market.MarketSpecCache.get(symbol);
 
                 double priceDiff = "LONG".equals(dir) ? currentPrice - avg : avg - currentPrice;
-                double ticks = Math.round(priceDiff / spec.getTickSize());
+                long ticks = Math.round(priceDiff / spec.getTickSize());
                 double rate = Store.ExchangeRateCache.getRate(spec.getCurrency());
 
-                total += ticks * spec.getTickValue() * rate * qty;
+                total += ticks * spec.getTickValueKrw(rate) * qty;
             }
 
         } catch (java.sql.SQLException e) {
@@ -365,78 +374,86 @@ public class PositionService {
         return positionDAO.findUserIdsBySymbol(symbol);
     }
 //강제 전종목청산=로스컷
-    public void forcecloseAllPositions(int userId) {
+public void forcecloseAllPositions(int userId) {
 
-        List<Position> positions = positionDAO.findAllByUser(userId);
+    List<Position> positions = positionDAO.findAllByUser(userId);
 
-        for (Position p : positions) {
-            String symbol = p.getSymbol();
+    for (Position p : positions) {
+        String symbol = p.getSymbol();
+        model.OrderSide closeSide = p.isLong() ? model.OrderSide.SELL : model.OrderSide.BUY;
 
-            model.OrderSide closeSide = p.isLong() ? model.OrderSide.SELL : model.OrderSide.BUY;
+        double orderPrice = closeSide == model.OrderSide.BUY
+                ? Store.PriceStore.getBestAsk(symbol)
+                : Store.PriceStore.getBestBid(symbol);
 
-            double executionPrice = closeSide == model.OrderSide.BUY
-                    ? Store.PriceStore.getBestAsk(symbol)
-                    : Store.PriceStore.getBestBid(symbol);
+        LocalDateTime signalTime = LocalDateTime.now().withNano(0);
 
-            if (Double.isNaN(executionPrice) || executionPrice <= 0) continue;
+        if (Double.isNaN(orderPrice) || orderPrice <= 0) continue;
 
-            // executeMarket 재사용 (OrderExecutionService 순환참조 피하려고 직접 처리)
-            int orderId = new OrderDAO().insertFilled(
-                    userId,
-                    symbol,
-                    closeSide.name(),
-                    executionPrice,
-                    p.getQty(),
-                    0,
-                    p.getAvgPrice(),
-                    true,
-                    "LIQUIDATION",
-                    null   // 🔥 로스컷은 틱수 개념 없음
+        double filledPrice = closeSide == model.OrderSide.BUY
+                ? Store.PriceStore.getBestAsk(symbol)
+                : Store.PriceStore.getBestBid(symbol);
+
+        LocalDateTime fillTime = LocalDateTime.now().withNano(0);
+
+        int orderId = new OrderDAO().insertFilled(
+                userId, symbol, closeSide.name(),
+                orderPrice, filledPrice,
+                p.getQty(), 0, p.getAvgPrice(), true, "LIQUIDATION", null
+        );
+
+        if (orderId > 0) {
+            model.TradeResult result = applyTrade(orderId, userId, symbol, closeSide, filledPrice, p.getQty(),
+                    false, 0, false, 0);   // 🔥 반환값 받음
+
+            double margin = new service.UserDataDAO().getAvailableMargin(userId);   // 🔥 조회
+
+            logSignalAndFill(userId, symbol, closeSide, String.valueOf(orderId),
+                    "강제청산(로스컷)", orderPrice, filledPrice, p.getQty(), signalTime, fillTime, result, margin);   // 🔥 전달
+
+            server.ClientEventMessage event = new server.ClientEventMessage(
+                    "TRADE_EXECUTED", symbol,
+                    closeSide == model.OrderSide.BUY ? "BUY_EXECUTED" : "SELL_EXECUTED"
             );
-
-            if (orderId > 0) {
-                applyTrade(orderId, userId, symbol, closeSide, executionPrice, p.getQty(),
-                        false, 0, false, 0);
-
-                server.ClientEventMessage event = new server.ClientEventMessage(
-                        "TRADE_EXECUTED", symbol,
-                        closeSide == model.OrderSide.BUY ? "BUY_EXECUTED" : "SELL_EXECUTED"
-                );
-                //사운드/알림용 이벤트 전송
-                server.SessionManager.sendEventToCustomer(userId, event);
-            }
-
-            System.out.println("[서버] 로스컷 강제청산 - userId: " + userId + ", symbol: " + symbol + ", qty: " + p.getQty());
+            server.SessionManager.sendEventToCustomer(userId, event);
         }
-//for문 밖(전체종목청산끝나고) 포지션변화일어나면 그 고객 주문창 탑인포패널 즉시 푸쉬
-        topInfoService.pushToUser(userId);
-    }
 
+        System.out.println("[서버] 로스컷 강제청산 - userId: " + userId + ", symbol: " + symbol + ", qty: " + p.getQty());
+    }
+    topInfoService.pushToUser(userId);
+}
 
 //TPSL 청산용도 / 직접처리방식임
-public void closePosition(Position pos, double price, String reason) {
+public void closePosition(Position pos, double orderPrice, String reason) {
+
+    LocalDateTime signalTime = LocalDateTime.now().withNano(0);
 
     OrderSide side = pos.isLong() ? OrderSide.SELL : OrderSide.BUY;
 
     double triggerPrice = "TP".equals(reason) ? pos.getTpPrice() : pos.getSlPrice();
-    Integer tickCount = "TP".equals(reason) ? pos.getTpTicks() : pos.getSlTicks();   // 🔥 추가
+    Integer tickCount = "TP".equals(reason) ? pos.getTpTicks() : pos.getSlTicks();
+
+    double filledPrice = side == OrderSide.SELL
+            ? Store.PriceStore.getBestBid(pos.getSymbol())
+            : Store.PriceStore.getBestAsk(pos.getSymbol());
+
+    LocalDateTime fillTime = LocalDateTime.now().withNano(0);
 
     int orderId = new OrderDAO().insertFilled(
-            pos.getUserId(),
-            pos.getSymbol(),
-            side.name(),
-            price,
-            pos.getQty(),
-            triggerPrice,
-            pos.getAvgPrice(),
-            true,
-            reason,
-            tickCount   // 🔥 추가
+            pos.getUserId(), pos.getSymbol(), side.name(),
+            orderPrice, filledPrice,
+            pos.getQty(), triggerPrice, pos.getAvgPrice(), true, reason, tickCount
     );
 
     if (orderId > 0) {
-        applyTrade(orderId, pos.getUserId(), pos.getSymbol(), side, price, pos.getQty(),
-                false, 0, false, 0);
+        model.TradeResult result = applyTrade(orderId, pos.getUserId(), pos.getSymbol(), side, filledPrice, pos.getQty(),
+                false, 0, false, 0);   // 🔥 반환값 받음
+
+        double margin = new service.UserDataDAO().getAvailableMargin(pos.getUserId());   // 🔥 조회
+
+        String eventType = "TP".equals(reason) ? "익절(TP) 청산" : "손절(SL) 청산";
+        logSignalAndFill(pos.getUserId(), pos.getSymbol(), side, String.valueOf(orderId),
+                eventType, orderPrice, filledPrice, pos.getQty(), signalTime, fillTime, result, margin);   // 🔥 전달
 
         server.ClientEventMessage event = new server.ClientEventMessage(
                 "TRADE_EXECUTED", pos.getSymbol(),
@@ -444,12 +461,11 @@ public void closePosition(Position pos, double price, String reason) {
         );
         server.SessionManager.sendEventToCustomer(pos.getUserId(), event);
 
-        //포지션변화일어나면 그 고객 주문창 탑인포패널 즉시 푸쉬
         topInfoService.pushToUser(pos.getUserId());
 
         System.out.println("[서버] " + reason + " 자동청산 - userId: " + pos.getUserId()
-                + ", symbol: " + pos.getSymbol() + ", price: " + price + ", qty: " + pos.getQty()
-                + ", ticks: " + tickCount);
+                + ", symbol: " + pos.getSymbol() + ", orderPrice: " + orderPrice + ", filledPrice: " + filledPrice
+                + ", qty: " + pos.getQty() + ", ticks: " + tickCount);
     }
 }
 
@@ -475,13 +491,13 @@ public void closePosition(Position pos, double price, String reason) {
                 Market.MarketSpec spec = Market.MarketSpecCache.get(symbol);
 
                 double priceDiff = "LONG".equals(dir) ? currentPrice - avg : avg - currentPrice;
-                double ticks = Math.round(priceDiff / spec.getTickSize());
+                long ticks = Math.round(priceDiff / spec.getTickSize());
                 double rate = Store.ExchangeRateCache.getRate(spec.getCurrency());
-                double pnl = ticks * spec.getTickValue() * rate * qty;
+                long pnl = ticks * spec.getTickValueKrw(rate) * qty;
 
                 result.add(new model.PositionRow(
                         rs.getInt("id"), symbol, avg, currentPrice,
-                        displaySide, qty, String.format("%.2f", pnl)
+                        displaySide, qty, String.format("%.2f", (double) pnl)
                 ));
             }
 
@@ -491,5 +507,70 @@ public void closePosition(Position pos, double price, String reason) {
 
         return result;
     }
+
+
+
+
+    // 🔥 이 클래스 전용 (OrderExecutionService와 중복 구현)
+    //TP 익절 청산될 때
+    //SL 손절 청산될 때
+    //로스컷(강제청산)될 때
+    private void logSignalAndFill(int userId, String symbol, OrderSide side, String orderId,
+                                  String eventType, double orderPrice, double filledPrice, int qty,
+                                  LocalDateTime signalTime, LocalDateTime fillTime,
+                                  model.TradeResult result, double margin) {
+
+        String exchange = service.OrderAuditDAO.resolveExchange(symbol);
+        String symbolKor = service.UserDataDAO.symbolToKor(symbol);
+        String sideKor = (side == OrderSide.BUY) ? "매수" : "매도";
+
+        model.OrderAuditLog signalLog = new model.OrderAuditLog();
+        signalLog.time = signalTime;
+        signalLog.eventType = eventType;
+        signalLog.userId = userId;
+        signalLog.exchange = exchange;
+        signalLog.server = "신호";
+        signalLog.orderId = orderId;
+        signalLog.symbol = symbol;
+        signalLog.orderPrice = orderPrice;
+        signalLog.filledPrice = 0;
+        signalLog.side = side.name();
+        signalLog.qty = qty;
+
+        // 🔥 DB상 실제 미체결 + 지금 막 트리거된 이 청산 자신을 합쳐서 스냅샷 구성
+        String existingSnapshot = service.OrderAuditDAO.buildOpenOrderSnapshot(userId);
+        String selfEntry = symbolKor + ":" + sideKor + qty + "(" + orderPrice + ")";
+        signalLog.openOrderSnapshot = existingSnapshot.isEmpty()
+                ? selfEntry
+                : existingSnapshot + ", " + selfEntry;
+
+        orderAuditDAO.insertLog(signalLog);
+
+        String positionSnapshot = service.OrderAuditDAO.buildPositionSnapshot(userId);
+
+        model.OrderAuditLog fillLog = new model.OrderAuditLog();
+        fillLog.time = fillTime;
+        fillLog.eventType = eventType;
+        fillLog.userId = userId;
+        fillLog.exchange = exchange;
+        fillLog.server = "체결";
+        fillLog.orderId = orderId;
+        fillLog.symbol = symbol;
+        fillLog.orderPrice = 0;
+        fillLog.filledPrice = filledPrice;
+        fillLog.side = side.name();
+        fillLog.qty = qty;
+        fillLog.fee = result.fee;
+        fillLog.pnl = result.realizedPnl;
+        fillLog.margin = margin;
+        fillLog.positionSnapshot = positionSnapshot;
+        orderAuditDAO.insertLog(fillLog);
+    }
+
+    // 🔥 소수점 4째자리에서 반올림
+    private double round4(double value) {
+        return Math.round(value * 10000.0) / 10000.0;
+    }
+
 
 }

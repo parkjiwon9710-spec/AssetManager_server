@@ -13,13 +13,13 @@ public class OvhQuoteParser {
         public final OrderBookSnapshot snapshot;
         public final double bestBid;
         public final double bestAsk;
-        public final double midPrice;
+
 
         public Result(OrderBookSnapshot snapshot, double bestBid, double bestAsk) {
             this.snapshot = snapshot;
             this.bestBid = bestBid;
             this.bestAsk = bestAsk;
-            this.midPrice = (bestBid + bestAsk) / 2.0;
+
         }
     }
 

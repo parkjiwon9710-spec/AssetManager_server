@@ -26,6 +26,11 @@ public class SessionManager {
     public static final AttributeKey<String> ROLE_KEY = AttributeKey.valueOf("role");
     public static final AttributeKey<Boolean> IS_PROXY_KEY = AttributeKey.valueOf("isProxy"); // 🔥 추가
 
+
+
+    private static final service.LoginHistoryDAO loginHistoryDAO = new service.LoginHistoryDAO();
+
+
     public static boolean register(int userId, String username, String name, String mac, String role, ChannelHandlerContext ctx) {
         return register(userId, username, name, mac, role, ctx, false);
     }
@@ -79,10 +84,18 @@ public class SessionManager {
             proxyConnections.remove(userId, ctx);
             System.out.println("[세션] 관리자 대리접속 해제 - userId: " + userId + ", 현재 대리접속 수: " + proxyConnections.size());
         } else {
+
+            SessionInfo removedInfo = customerSessionInfo.get(userId); // 🔥 삭제 전에 캡처
+
             // 🔥 이 ctx가 현재 맵에 등록된 채널일 때만 제거 (레이스 컨디션 방지)
             customerConnections.remove(userId, ctx);
             if (customerConnections.get(userId) == null) {
                 customerSessionInfo.remove(userId);
+
+                if (removedInfo != null) { // 🔥 실제로 최종 제거된 경우에만 로그아웃 기록
+                    loginHistoryDAO.insert(userId, removedInfo.getUsername(), removedInfo.getName(),
+                            removedInfo.getIp(), removedInfo.getMac(), "LOGOUT");
+                }
             }
             chartSubscriptions.remove(userId);
             for (Map<Integer, Integer> counts : symbolSubscriberCounts.values()) {
@@ -192,7 +205,12 @@ public class SessionManager {
         }
     }
 /// //////////////////////////////////
-
+///
+/// ///////////////////////////////////
+public static SessionInfo getSessionInfo(int userId) {
+    return customerSessionInfo.get(userId);
+}
+/// ///////////////////////////////////
 
     /// ///////////////특정관리자1명에게 개별전송   캡쳐때 쓰일듯
     public static ChannelHandlerContext getAdmin(int userId) {

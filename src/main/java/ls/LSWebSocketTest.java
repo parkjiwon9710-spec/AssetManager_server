@@ -44,7 +44,7 @@ public class LSWebSocketTest {
     // =========================================================
 
     private static final String SYMBOL =
-            "HSIU26";
+            "HSIQ26";
 
     // =========================================================
     // 환경변수
@@ -214,8 +214,11 @@ public class LSWebSocketTest {
                                                     accessToken,
                                                     SYMBOL,
                                                     "HSI",                                  // internalSymbol (테스트용)
-                                                    (internalSymbol, result) -> {
-                                                        System.out.println("[테스트] 파싱 결과 - bestBid: " + result.bestBid + ", bestAsk: " + result.bestAsk);
+                                                    (internalSymbol, result) -> {            // 🔥 OVH(호가) 콜백
+                                                        System.out.println("[테스트] 호가 - bestBid: " + result.bestBid + ", bestAsk: " + result.bestAsk);
+                                                    },
+                                                    (internalSymbol, result) -> {            // 🔥 OVC(체결) 콜백 - 신규 추가
+                                                        System.out.println("[테스트] 체결 - price: " + result.price + ", qty: " + result.qty);
                                                     }
                                             )
                                     );

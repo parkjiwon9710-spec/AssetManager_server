@@ -21,9 +21,7 @@ public class MarketSpecCache {
             ResultSet rs = ps.executeQuery();
             while (rs.next()) {
 
-                // tradeStart, tradeEnd 파싱
-                LocalTime tradeStart = null;
-                LocalTime tradeEnd = null;
+                LocalTime tradeStart = null, tradeEnd = null;
                 Time ts = rs.getTime("trade_start");
                 Time te = rs.getTime("trade_end");
                 if (ts != null) tradeStart = ts.toLocalTime();
@@ -33,12 +31,7 @@ public class MarketSpecCache {
                 Time as = rs.getTime("auction_start_time");
                 if (as != null) auctionStartTime = as.toLocalTime();
 
-
-                // 🔥 추가: 2/3구간 읽기
-                LocalTime tradeStart2 = null;
-                LocalTime tradeEnd2 = null;
-                LocalTime tradeStart3 = null;
-                LocalTime tradeEnd3 = null;
+                LocalTime tradeStart2 = null, tradeEnd2 = null, tradeStart3 = null, tradeEnd3 = null;
                 Time ts2 = rs.getTime("trade_start2");
                 Time te2 = rs.getTime("trade_end2");
                 Time ts3 = rs.getTime("trade_start3");
@@ -48,45 +41,41 @@ public class MarketSpecCache {
                 if (ts3 != null) tradeStart3 = ts3.toLocalTime();
                 if (te3 != null) tradeEnd3 = te3.toLocalTime();
 
+                // 🔥 신규 필드
+                java.time.LocalDate expiryDate = null;
+                java.sql.Date expiryRaw = rs.getDate("expiry_date");
+                if (expiryRaw != null) expiryDate = expiryRaw.toLocalDate();
+
+                Integer rolloverDays = null;
+                int rd = rs.getInt("rollover_days_before_expiry");
+                if (!rs.wasNull()) rolloverDays = rd;
+
+                String contractCycle = rs.getString("contract_cycle");
+                String rolloverStatus = rs.getString("rollover_status");
+
                 MarketSpec spec = new MarketSpec(
                         rs.getString("symbol"),
                         rs.getString("display_name"),
                         rs.getString("contract_code"),
-
-                        rs.getString("expiry_date") == null
-                                ? ""
-                                : rs.getString("expiry_date").substring(0, 7),
-
+                        rs.getString("expiry_date") == null ? "" : rs.getString("expiry_date").substring(0, 7),
                         rs.getDouble("price_start"),
                         rs.getDouble("price_end"),
                         rs.getDouble("initial_price"),
-
                         rs.getDouble("tick_size"),
                         rs.getDouble("tick_value"),
-
                         rs.getDouble("contract_multiplier"),
                         rs.getString("currency"),
-
                         rs.getDouble("fee_per_contract"),
-
                         rs.getLong("entry_margin"),
                         rs.getLong("maint_margin"),
-
                         rs.getLong("overnight_margin"),
                         rs.getBoolean("overnight_enabled"),
-
                         rs.getBoolean("is_active"),
-
-                        tradeStart,
-                        tradeEnd,
-                        auctionStartTime,
-                        tradeStart2,   // 🔥 추가
-                        tradeEnd2,     // 🔥 추가
-                        tradeStart3,   // 🔥 추가
-                        tradeEnd3,
+                        tradeStart, tradeEnd, auctionStartTime,
+                        tradeStart2, tradeEnd2, tradeStart3, tradeEnd3,
                         rs.getString("fee_type"),
-                        rs.getString("market_type")
-
+                        rs.getString("market_type"),
+                        expiryDate, rolloverDays, contractCycle, rolloverStatus   // 🔥 신규 4개
                 );
                 cache.put(rs.getString("symbol"), spec);
             }

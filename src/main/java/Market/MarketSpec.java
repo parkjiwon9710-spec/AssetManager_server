@@ -8,6 +8,10 @@ public class MarketSpec {
     private final String displayName;    // 추가
     private final String contractCode;   // 추가
     private final String expiry;         // 추가
+    private final java.time.LocalDate expiryDate;         // 🔥 신규 - 정확한 전체 만기일 (기존 expiry는 안 건드림)
+    private final Integer rolloverDaysBeforeExpiry;        // 🔥 신규
+    private final String contractCycle;                    // 🔥 신규 - "MONTHLY"/"QUARTERLY"
+    private final String rolloverStatus;                   // 🔥 신규 - "NONE"/"PENDING"/"FAILED"
     private final double priceStart;
     private final double priceEnd;
     private final double initialPrice;
@@ -60,7 +64,11 @@ public class MarketSpec {
             LocalTime tradeStart3,   // 🔥 추가
             LocalTime tradeEnd3,
             String feeType,
-            String marketType
+            String marketType,
+            java.time.LocalDate expiryDate,          // 🔥 신규
+            Integer rolloverDaysBeforeExpiry,          // 🔥 신규
+            String contractCycle,                      // 🔥 신규
+            String rolloverStatus
     ) {
         this.symbol = symbol;
         this.displayName = displayName;
@@ -88,6 +96,10 @@ public class MarketSpec {
         this.tradeEnd3 = tradeEnd3;
         this.feeType=feeType;
         this.marketType = marketType;
+        this.expiryDate = expiryDate;
+        this.rolloverDaysBeforeExpiry = rolloverDaysBeforeExpiry;
+        this.contractCycle = contractCycle;
+        this.rolloverStatus = rolloverStatus == null ? "NONE" : rolloverStatus;
 
     }
 
@@ -135,5 +147,19 @@ public class MarketSpec {
     public LocalTime getTradeEnd2() { return tradeEnd2; }
     public LocalTime getTradeStart3() { return tradeStart3; }
     public LocalTime getTradeEnd3() { return tradeEnd3; }
+
+    public java.time.LocalDate getExpiryDate() { return expiryDate; }
+    public Integer getRolloverDaysBeforeExpiry() { return rolloverDaysBeforeExpiry; }
+    public String getContractCycle() { return contractCycle; }
+    public String getRolloverStatus() { return rolloverStatus; }
+
+
+    /** 1틱당 원화 가치(정수). 화면 표시와 손익 계산은 반드시 이 값만 사용 */
+    public long getTickValueKrw(double rate) {
+        return java.math.BigDecimal.valueOf(getTickValue())
+                .multiply(java.math.BigDecimal.valueOf(rate))
+                .setScale(0, java.math.RoundingMode.HALF_UP)
+                .longValue();
+    }
 
 }

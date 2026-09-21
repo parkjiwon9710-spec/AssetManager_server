@@ -1,7 +1,9 @@
 package ls;
 
 import Market.OvhQuoteParser;
+import Market.OvcTradeParser;
 import Market.QuoteUpdateListener;
+import Market.TradeUpdateListener;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.netty.channel.ChannelHandlerContext;
@@ -12,20 +14,23 @@ public class LSWebSocketHandler
         extends SimpleChannelInboundHandler<TextWebSocketFrame> {
 
     private final String accessToken;
-    private final String symbol;          // LS tr_key, 예: "HSIU26"
+    private final String symbol;          // LS tr_key, 예: "HSIQ26"
     private final String internalSymbol;  // 우리 시스템 심볼, 예: "HSI"
-    private final QuoteUpdateListener listener;
+    private final QuoteUpdateListener quoteListener;   // OVH(호가) 콜백
+    private final TradeUpdateListener tradeListener;   // OVC(체결) 콜백 - 🔥 신규
 
     public LSWebSocketHandler(
             String accessToken,
             String symbol,
             String internalSymbol,
-            QuoteUpdateListener listener
+            QuoteUpdateListener quoteListener,
+            TradeUpdateListener tradeListener   // 🔥 신규 파라미터
     ) {
         this.accessToken = accessToken;
         this.symbol = symbol;
         this.internalSymbol = internalSymbol;
-        this.listener = listener;
+        this.quoteListener = quoteListener;
+        this.tradeListener = tradeListener;
     }
 
     // =========================================================
@@ -49,7 +54,6 @@ public class LSWebSocketHandler
             Object evt
     ) throws Exception {
 
-        // 🔥 SSL 핸드셰이크 완료/실패 확인용 로그
         if (evt instanceof io.netty.handler.ssl.SslHandshakeCompletionEvent sslEvent) {
             if (sslEvent.isSuccess()) {
                 System.out.println("[LS] SSL 핸드셰이크 성공");
@@ -76,11 +80,13 @@ public class LSWebSocketHandler
                 System.out.println("==============================");
 
                 System.out.println();
-                System.out.println("OVH 호가 구독 요청");
+                System.out.println("OVH/OVC 구독 요청");
                 System.out.println("종목 : " + symbol);
                 System.out.println();
 
-                subscribeQuote(ctx);
+                // 🔥 호가(OVH) + 체결(OVC) 둘 다 구독
+                subscribe(ctx, "OVH");
+                subscribe(ctx, "OVC");
             }
         }
 
@@ -88,10 +94,10 @@ public class LSWebSocketHandler
     }
 
     // =========================================================
-    // OVH 실시간 호가 구독
+    // OVH/OVC 실시간 구독 (공통화)
     // =========================================================
 
-    private void subscribeQuote(ChannelHandlerContext ctx) {
+    private void subscribe(ChannelHandlerContext ctx, String trCd) {
 
         String trKey = String.format("%-8s", symbol);
 
@@ -102,13 +108,13 @@ public class LSWebSocketHandler
                         + "\"tr_type\":\"3\""
                         + "},"
                         + "\"body\":{"
-                        + "\"tr_cd\":\"OVH\","
+                        + "\"tr_cd\":\"" + trCd + "\","
                         + "\"tr_key\":\"" + trKey + "\""
                         + "}"
                         + "}";
 
         System.out.println();
-        System.out.println("===== OVH 구독 요청 =====");
+        System.out.println("===== " + trCd + " 구독 요청 =====");
         System.out.println("종목 원본 : [" + symbol + "]");
         System.out.println("tr_key    : [" + trKey + "]");
         System.out.println("요청      : " + request);
@@ -141,7 +147,6 @@ public class LSWebSocketHandler
             JsonObject header = json.getAsJsonObject("header");
 
             String trCd = header.has("tr_cd") ? header.get("tr_cd").getAsString() : null;
-            if (!"OVH".equals(trCd)) return;
 
             if (!json.has("body") || json.get("body").isJsonNull()) {
                 // 구독 등록 확인 응답 등 (rsp_cd만 있고 body 없음) - 무시
@@ -149,14 +154,22 @@ public class LSWebSocketHandler
             }
 
             JsonObject body = json.getAsJsonObject("body");
-            OvhQuoteParser.Result result = OvhQuoteParser.parse(body);
 
-            if (listener != null) {
-                listener.onQuoteUpdate(internalSymbol, result);
+            if ("OVH".equals(trCd)) {
+                OvhQuoteParser.Result result = OvhQuoteParser.parse(body);
+                if (quoteListener != null) {
+                    quoteListener.onQuoteUpdate(internalSymbol, result);
+                }
+            } else if ("OVC".equals(trCd)) {
+                OvcTradeParser.Result result = OvcTradeParser.parse(body);
+                if (tradeListener != null) {
+                    tradeListener.onTradeUpdate(internalSymbol, result);
+                }
             }
+            // 그 외 tr_cd는 무시
 
         } catch (Exception e) {
-            System.err.println("[LS] OVH 메시지 파싱 실패: " + message);
+            System.err.println("[LS] 메시지 파싱 실패: " + message);
             e.printStackTrace();
         }
     }
@@ -166,10 +179,8 @@ public class LSWebSocketHandler
     // =========================================================
 
     @Override
-    public void channelInactive(
-            ChannelHandlerContext ctx
-    ) {
-        System.out.println("WebSocket 연결 종료");
+    public void channelInactive(ChannelHandlerContext ctx) {
+        System.out.println("[LS] WebSocket 연결 종료 - " + java.time.LocalDateTime.now());
     }
 
     // =========================================================
@@ -177,11 +188,8 @@ public class LSWebSocketHandler
     // =========================================================
 
     @Override
-    public void exceptionCaught(
-            ChannelHandlerContext ctx,
-            Throwable cause
-    ) {
-        System.err.println("WebSocket 오류:");
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        System.err.println("[LS] WebSocket 오류 - " + java.time.LocalDateTime.now());
         cause.printStackTrace();
         ctx.close();
     }

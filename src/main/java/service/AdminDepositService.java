@@ -41,8 +41,10 @@ FROM deposit_requests d
 JOIN users u ON d.user_id = u.id
 
 WHERE d.type = ?
-AND d.created_at >= ?
-AND d.created_at < ?
+AND (
+    d.status = 'PENDING'
+    OR (d.created_at >= ? AND d.created_at < ?)
+)
 ORDER BY d.id DESC
 """;
 
@@ -184,6 +186,19 @@ ORDER BY d.id DESC
                 approveStmt.setInt(2, requestId);
                 approveStmt.executeUpdate();
 
+                // 🔥 승인 후 잔액 조회 + 감사로그
+                double resultBalance = 0;
+                try (PreparedStatement balPs = conn.prepareStatement("SELECT balance FROM users WHERE id=?")) {
+                    balPs.setInt(1, userId);
+                    try (ResultSet balRs = balPs.executeQuery()) {
+                        if (balRs.next()) resultBalance = balRs.getDouble("balance");
+                    }
+                }
+                String operatorText = "DEPOSIT".equals(reqType)
+                        ? "관리자 입금 승인(금액:" + service.OrderAuditDAO.formatAmount(amount) + "원)"
+                        : "관리자 출금 승인(금액:" + service.OrderAuditDAO.formatAmount(amount) + "원)";
+                service.OrderAuditDAO.insertDwAuditLog(userId, null, operatorText, null, resultBalance);
+
                 affectedUserIds.add(new ApprovedInfo(userId, reqType));
             }
 
@@ -235,6 +250,20 @@ ORDER BY d.id DESC
                 rejectStmt.setInt(1, adminId);
                 rejectStmt.setInt(2, requestId);
                 rejectStmt.executeUpdate();
+
+                // 🔥 거부 후 잔액 조회 + 감사로그
+                double resultBalance = 0;
+                try (PreparedStatement balPs = conn.prepareStatement("SELECT balance FROM users WHERE id=?")) {
+                    balPs.setInt(1, userId);
+                    try (ResultSet balRs = balPs.executeQuery()) {
+                        if (balRs.next()) resultBalance = balRs.getDouble("balance");
+                    }
+                }
+                String operatorText = "DEPOSIT".equals(reqType)
+                        ? "관리자 입금 거부(금액:" + service.OrderAuditDAO.formatAmount(amount) + "원)"
+                        : "관리자 출금 거부(금액:" + service.OrderAuditDAO.formatAmount(amount) + "원)";
+                service.OrderAuditDAO.insertDwAuditLog(userId, null, operatorText, null, resultBalance);
+
 
                 affectedUserIds.add(new ApprovedInfo(userId, reqType));
             }

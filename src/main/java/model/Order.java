@@ -6,7 +6,8 @@ public class Order {
     private int userId;
     private String symbol;
     private String side;        // BUY / SELL
-    private double price;
+    private double orderPrice;
+    private Double filledPrice;     // 신규, PENDING이면 null
     private int qty;
     private String status;      // PENDING / FILLED
     private String orderType;   // MARKET / LIMIT / STOP / MIT
@@ -25,8 +26,15 @@ public class Order {
     public String getSide() { return side; }
     public void setSide(String side) { this.side = side; }
 
-    public double getPrice() { return price; }
-    public void setPrice(double price) { this.price = price; }
+
+
+
+    public double getOrderPrice() { return orderPrice; }
+    public void setOrderPrice(double orderPrice) { this.orderPrice = orderPrice; }
+
+    public Double getFilledPrice() { return filledPrice; }
+    public void setFilledPrice(Double filledPrice) { this.filledPrice = filledPrice; }
+
 
     public int getQty() { return qty; }
     public void setQty(int qty) { this.qty = qty; }

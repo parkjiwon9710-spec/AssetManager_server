@@ -4,14 +4,19 @@ public class HsiMarketData {
     private String start1, end1, start2, end2, start3, end3;
     private boolean holidayToday;
     private String expiryDate;
+    private Integer rolloverDaysBeforeExpiry;   // 🔥 신규
+    private String rolloverStatus;              // 🔥 신규
 
     public HsiMarketData(String start1, String end1, String start2, String end2,
-                         String start3, String end3, boolean holidayToday, String expiryDate) {
+                         String start3, String end3, boolean holidayToday, String expiryDate,
+                         Integer rolloverDaysBeforeExpiry, String rolloverStatus) {
         this.start1 = start1; this.end1 = end1;
         this.start2 = start2; this.end2 = end2;
         this.start3 = start3; this.end3 = end3;
         this.holidayToday = holidayToday;
         this.expiryDate = expiryDate;
+        this.rolloverDaysBeforeExpiry = rolloverDaysBeforeExpiry;
+        this.rolloverStatus = rolloverStatus;
     }
 
     public String getStart1() { return start1; }
@@ -22,4 +27,6 @@ public class HsiMarketData {
     public String getEnd3() { return end3; }
     public boolean isHolidayToday() { return holidayToday; }
     public String getExpiryDate() { return expiryDate; }
+    public Integer getRolloverDaysBeforeExpiry() { return rolloverDaysBeforeExpiry; }
+    public String getRolloverStatus() { return rolloverStatus; }
 }

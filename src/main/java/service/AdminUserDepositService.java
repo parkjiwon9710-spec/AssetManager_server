@@ -132,6 +132,21 @@ public class AdminUserDepositService {
                 depositPs.executeUpdate();
             }
 
+
+            // 🔥 처리 후 잔액 조회 + 감사로그
+            double resultBalance = 0;
+            try (PreparedStatement balPs = conn.prepareStatement("SELECT balance FROM users WHERE id=?")) {
+                balPs.setInt(1, userId);
+                try (ResultSet balRs = balPs.executeQuery()) {
+                    if (balRs.next()) resultBalance = balRs.getDouble("balance");
+                }
+            }
+            String operatorText = delta > 0
+                    ? "관리자 입금 처리(금액:" + service.OrderAuditDAO.formatAmount(Math.abs(delta)) + "원)"
+                    : "관리자 출금 처리(금액:" + service.OrderAuditDAO.formatAmount(Math.abs(delta)) + "원)";
+            service.OrderAuditDAO.insertDwAuditLog(userId, null, operatorText, null, resultBalance);
+
+
             conn.commit();
             outUserId[0] = userId;
             return null;

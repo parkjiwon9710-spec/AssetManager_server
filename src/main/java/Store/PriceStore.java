@@ -16,6 +16,7 @@ public class PriceStore {
     private static final Map<String, Double> openMap      = new ConcurrentHashMap<>();
     private static final Map<String, Double> highMap      = new ConcurrentHashMap<>();
     private static final Map<String, Double> lowMap       = new ConcurrentHashMap<>();
+    private static final Map<String, String> expiryMap = new ConcurrentHashMap<>();
 
 
 
@@ -69,6 +70,30 @@ public class PriceStore {
 
 
         notifyListeners(symbol);  // ✅ 여기에 추가
+    }
+
+
+
+    // 🔥 REST(o3105)로 받은 값은 정확한 원본이므로 병합(merge) 아니라 그대로 덮어씀
+    public static void applySymbolInfoSnapshot(String symbol, double last, double prevClose, double open, double high, double low, String expiry) {
+        lastPrice.put(symbol, round(symbol, last));
+        prevCloseMap.put(symbol, round(symbol, prevClose));
+        openMap.put(symbol, round(symbol, open));
+        highMap.put(symbol, round(symbol, high));
+        lowMap.put(symbol, round(symbol, low));
+        expiryMap.put(symbol, expiry);
+
+
+        notifyListeners(symbol);
+    }
+
+
+    public static String getExpiry(String symbol) {
+        return expiryMap.get(symbol);
+    }
+
+    public static void setExpiry(String symbol, String expiry) {
+        expiryMap.put(symbol, expiry);
     }
 
     // 호가 업데이트
